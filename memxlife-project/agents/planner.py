@@ -26,6 +26,12 @@ class PlannerAgent(BaseAgent):
         previous_attempts = task.payload.get("previous_attempts", [])
         kb_summary = task.payload.get("kb_summary", "")
 
+        # Mock mode — skip LLM, use heuristic directly
+        if ctx.mock_mode:
+            decision = self._heuristic_fallback(metric_spec, previous_attempts)
+            decision["metric_name"] = metric_name
+            return decision
+
         strategies_json = json.dumps(
             [s.to_dict() for s in metric_spec.strategies], indent=2
         )
