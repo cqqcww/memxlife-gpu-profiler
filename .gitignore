@@ -5,3 +5,7 @@ runs/
 *.egg-info/
 .env
 /tmp/
+runs/
+runs/
+__pycache__/
+*.pyc
