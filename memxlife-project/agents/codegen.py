@@ -10,9 +10,21 @@ from agents.base import BaseAgent
 from core.models import AgentContext, Task
 from llm.client import LLMClient
 from llm.prompts import CODEGEN_SYSTEM, CODEGEN_USER
-from probes.registry import get_template_info, load_template, parameterize_template
+from probes.registry import load_template
 
 logger = logging.getLogger(__name__)
+
+
+def _build_compile_command(params: dict[str, Any]) -> str:
+    """Build nvcc compile command with -D flags from params."""
+    defines = []
+    for key, value in params.items():
+        if key.isupper() and isinstance(value, (int, float)):
+            defines.append(f"-D{key}={value}")
+        elif key.isupper() and isinstance(value, str):
+            defines.append(f'-D{key}=\\"{value}\\"')
+    defines_str = " ".join(defines)
+    return f"nvcc -O2 {defines_str} -o probe probe.cu"
 
 
 class CodegenAgent(BaseAgent):
@@ -51,18 +63,45 @@ class CodegenAgent(BaseAgent):
         if template_name:
             try:
                 template_code = load_template(template_name)
-                # Apply parameter substitution
-                template_code = parameterize_template(template_code, base_params)
             except FileNotFoundError:
-                logger.info("Template %s not found, LLM will generate from scratch", template_name)
+                logger.info("Template %s not found, will generate from scratch", template_name)
 
-        # Use LLM to generate or refine the code
+        # Build compile command with -D flags for params
+        compile_cmd = _build_compile_command(base_params)
+
+        # If we have a template, try LLM to refine it; fall back to template directly
+        if template_code:
+            try:
+                return self._generate_with_llm(
+                    metric_name=metric_name,
+                    strategy_name=strategy_name,
+                    strategy_description=strategy.get("description", ""),
+                    template_code=template_code,
+                    params=base_params,
+                    compile_cmd=compile_cmd,
+                    previous_errors=previous_errors,
+                    ctx=ctx,
+                )
+            except Exception as e:
+                logger.warning("LLM codegen failed, using template directly: %s", e)
+                return {
+                    "metric_name": metric_name,
+                    "strategy_name": strategy_name,
+                    "cuda_code": template_code,
+                    "compile_command": compile_cmd,
+                    "run_command": "./probe",
+                    "expected_output_format": f"RESULT:{metric_name}=<value>",
+                    "codegen": "template-fallback",
+                }
+
+        # No template — must use LLM
         return self._generate_with_llm(
             metric_name=metric_name,
             strategy_name=strategy_name,
             strategy_description=strategy.get("description", ""),
-            template_code=template_code,
+            template_code="",
             params=base_params,
+            compile_cmd=compile_cmd,
             previous_errors=previous_errors,
             ctx=ctx,
         )
@@ -74,6 +113,7 @@ class CodegenAgent(BaseAgent):
         strategy_description: str,
         template_code: str,
         params: dict[str, Any],
+        compile_cmd: str,
         previous_errors: list,
         ctx: AgentContext,
     ) -> dict[str, Any]:
@@ -102,11 +142,17 @@ class CodegenAgent(BaseAgent):
             decision = _extract_json(raw)
         except Exception as e:
             logger.error("Codegen LLM call failed: %s", e)
-            # If we have a parameterized template, use it directly
+            # If we have a template, use it directly
             if template_code:
-                return self._fallback_from_template(
-                    metric_name, strategy_name, template_code, params
-                )
+                return {
+                    "metric_name": metric_name,
+                    "strategy_name": strategy_name,
+                    "cuda_code": template_code,
+                    "compile_command": compile_cmd,
+                    "run_command": "./probe",
+                    "expected_output_format": f"RESULT:{metric_name}=<value>",
+                    "codegen": "template-fallback",
+                }
             return {
                 "metric_name": metric_name,
                 "strategy_name": strategy_name,
@@ -114,35 +160,24 @@ class CodegenAgent(BaseAgent):
                 "compile_command": "",
                 "run_command": "",
                 "error": f"Codegen failed: {e}",
-                "planner": "failed",
+                "codegen": "failed",
             }
 
         cuda_code = decision.get("cuda_code", "")
-        compile_cmd = decision.get("compile_command", "nvcc -O2 -o probe probe.cu")
+        llm_compile = decision.get("compile_command", "")
         run_cmd = decision.get("run_command", "./probe")
 
+        # Prefer LLM compile command if it looks valid, otherwise use our generated one
+        final_compile = llm_compile if llm_compile.startswith("nvcc") else compile_cmd
+
         return {
             "metric_name": metric_name,
             "strategy_name": strategy_name,
-            "cuda_code": cuda_code,
-            "compile_command": compile_cmd,
+            "cuda_code": cuda_code if cuda_code else template_code,
+            "compile_command": final_compile,
             "run_command": run_cmd,
             "expected_output_format": decision.get("expected_output_format", ""),
-            "planner": "llm",
-        }
-
-    def _fallback_from_template(
-        self, metric_name: str, strategy_name: str, template_code: str, params: dict
-    ) -> dict[str, Any]:
-        """Use parameterized template directly when LLM is unavailable."""
-        return {
-            "metric_name": metric_name,
-            "strategy_name": strategy_name,
-            "cuda_code": template_code,
-            "compile_command": "nvcc -O2 -o probe probe.cu",
-            "run_command": "./probe",
-            "expected_output_format": "RESULT:<metric>=<value>",
-            "planner": "template-fallback",
+            "codegen": "llm",
         }
 
 
