@@ -62,7 +62,20 @@ class ScoutAgent(BaseAgent):
 
     def _detect_tools(self) -> dict[str, bool]:
         tools = ["nvidia-smi", "ncu", "nsys", "nvcc", "deviceQuery", "bandwidthTest"]
-        return {t: shutil.which(t) is not None for t in tools}
+        result = {t: shutil.which(t) is not None for t in tools}
+        # Also check known non-PATH locations
+        import os
+        nvcc_candidates = [
+            "V:/NvidiaToolKit/bin/nvcc.exe",
+            "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.0/bin/nvcc.exe",
+        ]
+        if not result.get("nvcc"):
+            for c in nvcc_candidates:
+                if os.path.isfile(c):
+                    result["nvcc"] = True
+                    result["nvcc_path"] = c
+                    break
+        return result
 
     def _run_cmd(self, cmd: list[str], timeout: int = 30) -> str:
         try:

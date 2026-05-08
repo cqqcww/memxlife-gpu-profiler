@@ -5,7 +5,6 @@ runs/
 *.egg-info/
 .env
 /tmp/
-runs/
-runs/
-__pycache__/
-*.pyc
+api_config.py
+build/
+build_wsl/

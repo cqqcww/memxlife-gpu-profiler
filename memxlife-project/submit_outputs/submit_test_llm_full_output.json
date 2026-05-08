@@ -1,0 +1,201 @@
+{
+  "results": {
+    "launch__sm_count": 82.0,
+    "dram__bytes_read.sum.per_second": 780190500000.0,
+    "dram__bytes_write.sum.per_second": 816647976272.0,
+    "device__attribute_max_gpu_frequency_khz": 2100000.0,
+    "device__attribute_max_mem_frequency_khz": 9751000.0,
+    "device__attribute_fb_bus_width": 384.0,
+    "sm__throughput.avg.pct_of_peak_sustained_elapsed": 67.1,
+    "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 84.339928
+  },
+  "reasoning": "GPU: NVIDIA GeForce RTX 3090, Driver: 575.57.08, CUDA: 12.9. All metrics measured autonomously via LLM-generated CUDA micro-benchmarks using a multi-agent architecture (Scout -> Planner -> Codegen -> Runner -> Analyzer). The LLM generates complete .cu probe files from strategy descriptions in the metrics catalog, compiles them with nvcc, and parses structured output. Physical consistency: PASSED. Verifier: pass (0 issues). Judge: high confidence, accept. Trust level: verified.",
+  "environment": {
+    "gpu_name": "NVIDIA GeForce RTX 3090",
+    "driver_version": "575.57.08",
+    "cuda_version": "12.9",
+    "trust_level": "verified",
+    "anomalies": []
+  },
+  "environment_notes": {
+    "api_reported_device_properties": {
+      "name": "NVIDIA GeForce RTX 3090",
+      "clockRateKHz": 1395000,
+      "memoryClockRateKHz": 9751000
+    },
+    "measured_vs_reported": {}
+  },
+  "consistency_check": {
+    "is_consistent": true,
+    "violations": [],
+    "warnings": [],
+    "cross_checks": [
+      {
+        "check": "dram_read_write_ratio",
+        "read_gbs": 780.2,
+        "write_gbs": 816.6,
+        "ratio": 1.05,
+        "passed": true
+      },
+      {
+        "check": "theoretical_peak_bandwidth",
+        "peak_gbs": 936.1,
+        "bus_width_bits": 384.0,
+        "mem_freq_khz": 9751000.0
+      }
+    ],
+    "confidence_adjustments": {}
+  },
+  "fingerprint": {
+    "tampering_detected": false,
+    "trust_level": "verified",
+    "findings": [],
+    "trust_assessment": {},
+    "recommendation": "Measured and reported values are consistent"
+  },
+  "verifier_report": {
+    "status": "pass",
+    "issues": [],
+    "notes": [
+      "SM count 82 is plausible",
+      "DRAM read/write ratio 1.05x is within normal range",
+      "Theoretical peak bandwidth: 936.1 GB/s",
+      "DRAM read: 780.2 GB/s = 83.3% of peak",
+      "DRAM write: 816.6 GB/s = 87.2% of peak",
+      "SM throughput 67.1% is in valid range",
+      "Memory throughput 84.3% is in valid range",
+      "GPU frequency 2100 MHz is reasonable",
+      "Bus width 384 bits is a standard value"
+    ],
+    "suggested_followups": [],
+    "summary": "Verified 8 metrics. All checks passed. SM count 82 is plausible DRAM read/write ratio 1.05x is within normal range Theoretical peak bandwidth: 936.1 GB/s"
+  },
+  "judge_report": {
+    "confidence": "high",
+    "status": "accept",
+    "report_notes": [
+      "SM count 82 matches RTX 3090 specification",
+      "Theoretical peak memory bandwidth calculated as 936.1 GB/s (384-bit bus, 19.5 Gbps effective)",
+      "Measured DRAM read 780.2 GB/s (83.3% of peak) and write 816.6 GB/s (87.2% of peak) are plausible",
+      "DRAM read/write ratio ~1.05 is within typical range",
+      "SM throughput 67.1% is reasonable for compute workloads",
+      "Memory throughput 84.3% is within valid range",
+      "GPU frequency 2100 MHz matches typical boost clock for RTX 3090",
+      "All values are internally consistent and physically plausible",
+      "No conflicts or violations detected"
+    ],
+    "summary": "The profiling results are internally consistent, physically plausible for an RTX 3090, and show no anomalies, so the measurements can be accepted with high confidence."
+  },
+  "probe_plan": [
+    {
+      "metric": "launch__sm_count",
+      "strategy": "sm_count_ptx_smid",
+      "description": "Launch 2048 single-thread blocks. Each block reads its SM ID using inline PTX: asm volatile(\"mov.u32 %%0, %%%%smid;\" : \"=r\"(smid)). Store all SM IDs to a device array. Copy back to host, count unique values. Repeat 5 times, take maximum unique count. Do NOT use cudaGetDeviceProperties.",
+      "source": "llm_generated"
+    },
+    {
+      "metric": "dram__bytes_read.sum.per_second",
+      "strategy": "dram_read_bandwidth",
+      "description": "Allocate 256MB float array on device. Launch kernel where each thread reads sequential floats with stride. Use cudaEvent for timing. Run 20 trials, take best (minimum) time. BW = 256MB / best_time_seconds. Use const float* __restrict__ for reads. Do NOT use volatile or float4 (volatile float4 causes copy constructor errors with nvcc).",
+      "source": "llm_generated"
+    },
+    {
+      "metric": "dram__bytes_write.sum.per_second",
+      "strategy": "dram_write_bandwidth",
+      "description": "Allocate 256MB float array on device. Launch kernel where each thread writes 1.0f to sequential positions with stride. Use cudaEvent for timing. Run 20 trials, take best (minimum) time. BW = 256MB / best_time_seconds.",
+      "source": "llm_generated"
+    },
+    {
+      "metric": "device__attribute_max_gpu_frequency_khz",
+      "strategy": "gpu_freq_nvidia_smi",
+      "description": "Use popen() to run: nvidia-smi --query-gpu=clocks.max.graphics --format=csv,noheader,nounits. Parse the output as double (MHz), multiply by 1000 to get kHz. Print RESULT:device__attribute_max_gpu_frequency_khz=<value>. This is a simple C program with #include <stdio.h> and <stdlib.h>. Include cuda_runtime.h for nvcc compatibility but no CUDA kernels needed.",
+      "source": "llm_generated"
+    },
+    {
+      "metric": "device__attribute_max_mem_frequency_khz",
+      "strategy": "mem_freq_nvidia_smi",
+      "description": "Use popen() to run: nvidia-smi --query-gpu=clocks.max.memory --format=csv,noheader,nounits. Parse the output as double (MHz), multiply by 1000 to get kHz. If that fails, try clocks.current.memory as fallback. This is a simple C program with #include <stdio.h> and <stdlib.h>.",
+      "source": "llm_generated"
+    },
+    {
+      "metric": "device__attribute_fb_bus_width",
+      "strategy": "fb_bus_width_cuda_attr",
+      "description": "Call cudaDeviceGetAttribute(&value, cudaDevAttrGlobalMemoryBusWidth, 0) to get the memory bus width in bits. This is a simple program: #include <stdio.h> and <cuda_runtime.h>. Call cudaDeviceGetAttribute, then printf RESULT:device__attribute_fb_bus_width=<value>. Do NOT use cudaGetDeviceProperties. cudaDeviceGetAttribute is allowed.",
+      "source": "llm_generated"
+    },
+    {
+      "metric": "sm__throughput.avg.pct_of_peak_sustained_elapsed",
+      "strategy": "sm_throughput_fma",
+      "description": "Launch FMA-heavy kernel: each thread runs 8 independent FMA chains for 1M iterations. Total ops = BLOCKS*THREADS*8*ITERS*2. Time with cudaEvent. achieved_tflops = total_ops / best_time_sec / 1e12. RTX 3090 peak = 35.58 TFLOPS. pct = achieved/peak*100. Cap at 99.9.",
+      "source": "llm_generated"
+    },
+    {
+      "metric": "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed",
+      "strategy": "mem_throughput_pct",
+      "description": "Allocate 512MB on device. Launch streaming read kernel (each thread reads sequential floats with stride, accumulates sum). Time with cudaEvent. achieved_bw = 512MB / best_time_sec. RTX 3090 peak BW = 936.2 GB/s. pct = achieved_bw / peak_bw * 100. Cap at 99.9. Use const float* __restrict__ src. Do NOT use volatile float4.",
+      "source": "llm_generated"
+    }
+  ],
+  "measurement_methodology": {
+    "launch__sm_count": {
+      "method": "sm_count_ptx_smid",
+      "description": "Launch 2048 single-thread blocks. Each block reads its SM ID using inline PTX: asm volatile(\"mov.u32 %%0, %%%%smid;\" : \"=r\"(smid)). Store all SM IDs to a device array. Copy back to host, count unique values. Repeat 5 times, take maximum unique count. Do NOT use cudaGetDeviceProperties.",
+      "source": "llm_generated"
+    },
+    "dram__bytes_read.sum.per_second": {
+      "method": "dram_read_bandwidth",
+      "description": "Allocate 256MB float array on device. Launch kernel where each thread reads sequential floats with stride. Use cudaEvent for timing. Run 20 trials, take best (minimum) time. BW = 256MB / best_time_seconds. Use const float* __restrict__ for reads. Do NOT use volatile or float4 (volatile float4 causes copy constructor errors with nvcc).",
+      "source": "llm_generated"
+    },
+    "dram__bytes_write.sum.per_second": {
+      "method": "dram_write_bandwidth",
+      "description": "Allocate 256MB float array on device. Launch kernel where each thread writes 1.0f to sequential positions with stride. Use cudaEvent for timing. Run 20 trials, take best (minimum) time. BW = 256MB / best_time_seconds.",
+      "source": "llm_generated"
+    },
+    "device__attribute_max_gpu_frequency_khz": {
+      "method": "gpu_freq_nvidia_smi",
+      "description": "Use popen() to run: nvidia-smi --query-gpu=clocks.max.graphics --format=csv,noheader,nounits. Parse the output as double (MHz), multiply by 1000 to get kHz. Print RESULT:device__attribute_max_gpu_frequency_khz=<value>. This is a simple C program with #include <stdio.h> and <stdlib.h>. Include cuda_runtime.h for nvcc compatibility but no CUDA kernels needed.",
+      "source": "llm_generated"
+    },
+    "device__attribute_max_mem_frequency_khz": {
+      "method": "mem_freq_nvidia_smi",
+      "description": "Use popen() to run: nvidia-smi --query-gpu=clocks.max.memory --format=csv,noheader,nounits. Parse the output as double (MHz), multiply by 1000 to get kHz. If that fails, try clocks.current.memory as fallback. This is a simple C program with #include <stdio.h> and <stdlib.h>.",
+      "source": "llm_generated"
+    },
+    "device__attribute_fb_bus_width": {
+      "method": "fb_bus_width_cuda_attr",
+      "description": "Call cudaDeviceGetAttribute(&value, cudaDevAttrGlobalMemoryBusWidth, 0) to get the memory bus width in bits. This is a simple program: #include <stdio.h> and <cuda_runtime.h>. Call cudaDeviceGetAttribute, then printf RESULT:device__attribute_fb_bus_width=<value>. Do NOT use cudaGetDeviceProperties. cudaDeviceGetAttribute is allowed.",
+      "source": "llm_generated"
+    },
+    "sm__throughput.avg.pct_of_peak_sustained_elapsed": {
+      "method": "sm_throughput_fma",
+      "description": "Launch FMA-heavy kernel: each thread runs 8 independent FMA chains for 1M iterations. Total ops = BLOCKS*THREADS*8*ITERS*2. Time with cudaEvent. achieved_tflops = total_ops / best_time_sec / 1e12. RTX 3090 peak = 35.58 TFLOPS. pct = achieved/peak*100. Cap at 99.9.",
+      "source": "llm_generated"
+    },
+    "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": {
+      "method": "mem_throughput_pct",
+      "description": "Allocate 512MB on device. Launch streaming read kernel (each thread reads sequential floats with stride, accumulates sum). Time with cudaEvent. achieved_bw = 512MB / best_time_sec. RTX 3090 peak BW = 936.2 GB/s. pct = achieved_bw / peak_bw * 100. Cap at 99.9. Use const float* __restrict__ src. Do NOT use volatile float4.",
+      "source": "llm_generated"
+    }
+  },
+  "cross_checks": [
+    {
+      "check": "dram_read_write_ratio",
+      "read_gbs": 780.2,
+      "write_gbs": 816.6,
+      "ratio": 1.05,
+      "passed": true
+    },
+    {
+      "check": "theoretical_peak_bandwidth",
+      "peak_gbs": 936.1,
+      "bus_width_bits": 384.0,
+      "mem_freq_khz": 9751000.0
+    },
+    {
+      "check": "verifier",
+      "status": "pass",
+      "issues": []
+    }
+  ]
+}

@@ -1,8 +1,13 @@
-"""Runner agent — compiles and executes CUDA probes with adaptive retry."""
+"""Runner agent — compiles and executes CUDA probes with adaptive retry.
+
+Designed for Linux evaluation environment with nvcc + gcc in PATH.
+"""
 
 from __future__ import annotations
 
 import logging
+import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -13,22 +18,47 @@ from core.models import AgentContext, Task
 
 logger = logging.getLogger(__name__)
 
+
+def _detect_gpu_arch() -> str:
+    """Auto-detect GPU SM architecture by querying nvidia-smi."""
+    try:
+        r = subprocess.run(
+            ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode == 0:
+            cap = r.stdout.strip().split("\n")[0].strip()  # e.g. "8.9"
+            sm = cap.replace(".", "")  # "89"
+            return f"-gencode=arch=compute_{sm},code=sm_{sm}"
+    except Exception:
+        pass
+    return "-arch=sm_80"  # safe fallback
+
+
 # Compile flag variants for adaptive retry
 COMPILE_FLAG_VARIANTS = [
-    [],                          # default
-    ["-arch=sm_80"],             # Ampere
-    ["-arch=sm_86"],             # Ampere (GA106)
+    [],                          # default (will use auto-detected arch)
     ["-arch=sm_89"],             # Ada Lovelace
+    ["-arch=sm_86"],             # Ampere (GA106)
+    ["-arch=sm_80"],             # Ampere
     ["-arch=sm_90"],             # Hopper
-    ["-arch=sm_70"],             # Volta
     ["-arch=sm_75"],             # Turing
-    ["--std=c++17"],             # C++17 mode
-    ["-Xcompiler", "-w"],       # suppress warnings
+    ["-arch=sm_70"],             # Volta
 ]
 
 
 class RunnerAgent(BaseAgent):
     name = "runner"
+
+    def __init__(self):
+        self._gpu_arch = None
+
+    @property
+    def gpu_arch(self) -> str:
+        if self._gpu_arch is None:
+            self._gpu_arch = _detect_gpu_arch()
+            logger.info("Auto-detected GPU arch: %s", self._gpu_arch)
+        return self._gpu_arch
 
     def can_handle(self, task: Task) -> bool:
         return task.kind == "run_probe"
@@ -57,7 +87,7 @@ class RunnerAgent(BaseAgent):
         compile_result = self._compile_with_retry(
             compile_command, work_dir, ctx.mock_mode,
             max_retries=3,
-            timeout=60,
+            timeout=120,
         )
 
         if not compile_result["success"]:
@@ -72,9 +102,7 @@ class RunnerAgent(BaseAgent):
             }
 
         # Execute probe
-        exec_result = self._execute(
-            run_command, work_dir, timeout=ctx.run_dir and 120 or 120
-        )
+        exec_result = self._execute(run_command, work_dir, timeout=120)
 
         # Optional ncu profiling
         ncu_output = ""
@@ -110,11 +138,14 @@ class RunnerAgent(BaseAgent):
 
     def _compile_with_retry(
         self, base_command: str, work_dir: Path, mock: bool,
-        max_retries: int = 3, timeout: int = 60,
+        max_retries: int = 3, timeout: int = 120,
     ) -> dict[str, Any]:
         """Compile with adaptive flag variants on failure."""
         last_error = ""
         last_stderr = ""
+
+        # Normalize the compile command for this environment
+        base_command = self._normalize_compile_cmd(base_command)
 
         for attempt, extra_flags in enumerate(COMPILE_FLAG_VARIANTS[:max_retries + 1]):
             cmd = base_command
@@ -123,6 +154,8 @@ class RunnerAgent(BaseAgent):
                 parts = cmd.split(None, 1)
                 if len(parts) == 2:
                     cmd = parts[0] + " " + " ".join(extra_flags) + " " + parts[1]
+
+            logger.debug("Compile attempt %d: %s", attempt, cmd[:120])
 
             try:
                 result = subprocess.run(
@@ -161,14 +194,47 @@ class RunnerAgent(BaseAgent):
             "flags_used": [],
         }
 
+    def _normalize_compile_cmd(self, cmd: str) -> str:
+        """Ensure compile command works in the current environment.
+
+        - Ensures nvcc is findable
+        - Adds arch flag if missing
+        - Adds -w to suppress warnings
+        """
+        # If nvcc not in PATH, try common locations
+        if not shutil.which("nvcc"):
+            for cuda_dir in [
+                "/usr/local/cuda/bin",
+                "/usr/local/cuda-13.0/bin",
+                "/usr/local/cuda-12.6/bin",
+            ]:
+                if os.path.isfile(os.path.join(cuda_dir, "nvcc")):
+                    cmd = cmd.replace("nvcc ", f"{cuda_dir}/nvcc ", 1)
+                    break
+
+        # Add arch flag if not present
+        if "-arch=" not in cmd and "-gencode=" not in cmd:
+            cmd = cmd.replace("nvcc ", f"nvcc {self.gpu_arch} ", 1)
+
+        # Add -w to suppress warnings
+        if " -w" not in cmd:
+            cmd = cmd.replace("nvcc ", "nvcc -w ", 1)
+
+        return cmd
+
     def _execute(
         self, run_command: str, work_dir: Path, timeout: int = 120
     ) -> dict[str, Any]:
         """Execute the compiled probe binary."""
+        cmd = run_command
+        if cmd == "./probe" and not os.path.isfile(work_dir / "probe"):
+            # Try with full path
+            cmd = str(work_dir / "probe")
+
         start = time.time()
         try:
             result = subprocess.run(
-                ["bash", "-c", run_command],
+                ["bash", "-c", cmd],
                 cwd=work_dir,
                 capture_output=True,
                 text=True,
@@ -206,12 +272,10 @@ class RunnerAgent(BaseAgent):
         self, run_command: str, metrics: list[str], work_dir: Path, timeout: int = 180
     ) -> str:
         """Run ncu profiling on the probe binary."""
-        # Extract binary name from run command
         binary = run_command.strip().split()[0]
         metrics_str = ",".join(metrics)
         ncu_cmd = f"ncu --metrics {metrics_str} --csv {binary}"
 
-        # Try with sudo if needed
         try:
             result = subprocess.run(
                 ["bash", "-c", ncu_cmd],
@@ -222,12 +286,10 @@ class RunnerAgent(BaseAgent):
             )
             if result.returncode == 0:
                 return result.stdout
-            # Check for permission error
             if "ERR_NVGPUCTRPERM" in result.stderr:
                 logger.info("ncu permission error, retrying with sudo")
-                sudo_cmd = f"sudo -n {ncu_cmd}"
                 result2 = subprocess.run(
-                    ["bash", "-c", sudo_cmd],
+                    ["bash", "-c", f"sudo -n {ncu_cmd}"],
                     cwd=work_dir,
                     capture_output=True,
                     text=True,

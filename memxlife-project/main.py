@@ -23,6 +23,9 @@ def setup_logging(verbose: bool = False) -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+    # Suppress noisy third-party loggers even in verbose mode
+    for noisy in ("httpx", "httpcore", "anthropic", "urllib3"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 def main() -> None:
@@ -88,6 +91,30 @@ def main() -> None:
     print("RESULTS")
     print("=" * 60)
     print(json.dumps(results, indent=2))
+
+    # Write results.json to output dir
+    out_dir = Path(args.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    results_file = out_dir / "results.json"
+    results_file.write_text(json.dumps(results, indent=2), encoding="utf-8")
+
+    # Find the comprehensive output.json from the run (includes reasoning)
+    run_dirs = sorted(out_dir.glob("2026*"), reverse=True)
+    comprehensive_output = None
+    for rd in run_dirs:
+        output_file = rd / "output.json"
+        if output_file.exists():
+            comprehensive_output = output_file.read_text(encoding="utf-8")
+            break
+
+    # Write /workspace/output.json — prefer comprehensive version
+    workspace_output = Path("/workspace/output.json")
+    try:
+        content = comprehensive_output or json.dumps(results, indent=2)
+        workspace_output.write_text(content, encoding="utf-8")
+        print(f"\nOutput written to {workspace_output}")
+    except OSError:
+        pass  # Not in evaluation container
 
 
 if __name__ == "__main__":

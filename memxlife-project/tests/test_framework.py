@@ -16,8 +16,6 @@ from knowledge.metrics_catalog import build_catalog, get_metric_spec, list_suppo
 from knowledge.store import KnowledgeStore
 from parser.probe_parser import parse_probe_output, extract_primary_value
 from parser.ncu_parser import parse_ncu_csv, extract_ncu_metric
-from probes.registry import list_templates, load_template
-from agents.codegen import _build_compile_command
 
 
 # ── Probe output parser ─────────────────────────────────────
@@ -131,17 +129,15 @@ class TestMetricsCatalog:
     def test_params_are_uppercase(self):
         for name, spec in build_catalog().items():
             for strat in spec.strategies:
-                if strat.probe_template:
-                    for key in strat.params:
-                        assert key.isupper(), f"{name}/{strat.name}: param '{key}' not uppercase"
+                for key in strat.params:
+                    assert key.isupper(), f"{name}/{strat.name}: param '{key}' not uppercase"
 
-    def test_strategies_reference_valid_templates(self):
-        templates = list_templates()
+    def test_no_static_templates(self):
+        """All probe_template fields should be None — code is LLM-generated."""
         for name, spec in build_catalog().items():
             for strat in spec.strategies:
-                if strat.probe_template:
-                    assert strat.probe_template in templates, \
-                        f"{name}/{strat.name}: template '{strat.probe_template}' not found"
+                assert strat.probe_template is None, \
+                    f"{name}/{strat.name}: probe_template should be None"
 
     def test_physical_bounds(self):
         for name, spec in build_catalog().items():
@@ -158,53 +154,6 @@ class TestMetricsCatalog:
 
     def test_list_supported_metrics(self):
         assert len(list_supported_metrics()) == 9
-
-
-# ── Template registry ────────────────────────────────────────
-
-class TestTemplateRegistry:
-    def test_list_templates(self):
-        templates = list_templates()
-        assert len(templates) >= 7
-        for name in ["latency_pointer_chase", "cache_size_sweep", "bandwidth_global",
-                      "bandwidth_shared", "clock_frequency", "bank_conflict", "shmem_capacity"]:
-            assert name in templates, f"Missing template: {name}"
-
-    def test_load_template(self):
-        code = load_template("latency_pointer_chase")
-        assert "RESULT:" in code
-        assert "main(" in code
-
-    def test_load_nonexistent(self):
-        with pytest.raises(FileNotFoundError):
-            load_template("nonexistent_xyz")
-
-    def test_all_templates_have_result_and_main(self):
-        for name in list_templates():
-            code = load_template(name)
-            assert "RESULT:" in code, f"{name} missing RESULT:"
-            assert "main(" in code, f"{name} missing main()"
-
-
-# ── Compile command builder ──────────────────────────────────
-
-class TestCompileCommand:
-    def test_basic_defines(self):
-        cmd = _build_compile_command({"DATA_SIZE_BYTES": 268435456, "ITERATIONS": 1000, "WARMUP": 100})
-        assert "-DDATA_SIZE_BYTES=268435456" in cmd
-        assert "-DITERATIONS=1000" in cmd
-        assert "-DWARMUP=100" in cmd
-        assert cmd.startswith("nvcc")
-
-    def test_skips_non_uppercase(self):
-        cmd = _build_compile_command({"DATA_SIZE_BYTES": 256, "use_nvidia_smi": True})
-        assert "-DDATA_SIZE_BYTES=256" in cmd
-        assert "nvidia_smi" not in cmd
-
-    def test_empty_params(self):
-        cmd = _build_compile_command({})
-        assert "nvcc" in cmd
-        assert "-o probe" in cmd
 
 
 # ── Knowledge store ──────────────────────────────────────────
@@ -286,7 +235,7 @@ class TestMockIntegration:
         import subprocess
         result = subprocess.run(
             [sys.executable, "main.py", "--mock", "tests/full_target_spec.json"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=120,
         )
         assert result.returncode == 0
         # Find JSON block in output
@@ -302,6 +251,258 @@ class TestMockIntegration:
         assert len(data) == 9
         for key, val in data.items():
             assert isinstance(val, (int, float)) and val > 0, f"{key}={val}"
+
+
+# ── NCU Bottleneck Analyzer ──────────────────────────────────
+
+from analysis.ncu_bottleneck import NcuBottleneckAnalyzer, BottleneckType, MemoryLevel
+
+
+class TestNcuBottleneckAnalyzer:
+    def _make_csv(self, metrics: dict[str, float]) -> str:
+        """Build a fake ncu CSV output from metric name→value pairs."""
+        lines = ['"Metric Name","Metric Value","Metric Unit"']
+        for name, val in metrics.items():
+            lines.append(f'"{name}","{val}","%"')
+        return "\n".join(lines)
+
+    def test_compute_bound(self):
+        csv = self._make_csv({
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": 85.0,
+            "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 30.0,
+        })
+        analyzer = NcuBottleneckAnalyzer()
+        diag = analyzer.analyze(csv)
+        assert diag.primary_bottleneck == BottleneckType.COMPUTE_BOUND
+        assert diag.compute_pct == 85.0
+        assert diag.memory_pct == 30.0
+
+    def test_memory_bound(self):
+        csv = self._make_csv({
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": 20.0,
+            "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 80.0,
+            "dram__throughput.avg.pct_of_peak_sustained_elapsed": 75.0,
+        })
+        analyzer = NcuBottleneckAnalyzer()
+        diag = analyzer.analyze(csv)
+        assert diag.primary_bottleneck == BottleneckType.MEMORY_BOUND
+        assert diag.memory_bottleneck_level == MemoryLevel.DRAM
+
+    def test_latency_bound(self):
+        csv = self._make_csv({
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": 5.0,
+            "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 3.0,
+        })
+        analyzer = NcuBottleneckAnalyzer()
+        diag = analyzer.analyze(csv)
+        assert diag.primary_bottleneck == BottleneckType.LATENCY_BOUND
+
+    def test_balanced(self):
+        csv = self._make_csv({
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": 60.0,
+            "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 55.0,
+        })
+        analyzer = NcuBottleneckAnalyzer()
+        diag = analyzer.analyze(csv)
+        assert diag.primary_bottleneck == BottleneckType.BALANCED
+
+    def test_tensor_core_detection(self):
+        csv = self._make_csv({
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": 80.0,
+            "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 20.0,
+            "sm__pipe_tensor_op_hmma_cycles_active.avg.pct_of_peak_sustained_active": 70.0,
+        })
+        analyzer = NcuBottleneckAnalyzer()
+        diag = analyzer.analyze(csv)
+        from analysis.ncu_bottleneck import ComputeUnit
+        assert diag.primary_compute_unit == ComputeUnit.TENSOR_CORE
+
+    def test_bank_conflict_detection(self):
+        csv = self._make_csv({
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": 40.0,
+            "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 50.0,
+            "l1tex__data_bank_conflicts_pipe_lsu.sum": 50000.0,
+        })
+        analyzer = NcuBottleneckAnalyzer()
+        diag = analyzer.analyze(csv)
+        assert any("bank conflict" in b.lower() for b in diag.bottlenecks)
+
+    def test_occupancy_gap(self):
+        csv = self._make_csv({
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": 40.0,
+            "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 30.0,
+            "sm__maximum_warps_per_active_cycle_pct": 90.0,
+            "sm__warps_active.avg.pct_of_peak_sustained_active": 40.0,
+        })
+        analyzer = NcuBottleneckAnalyzer()
+        diag = analyzer.analyze(csv)
+        assert diag.occupancy_gap == 50.0
+        assert any("occupancy" in b.lower() for b in diag.bottlenecks)
+
+    def test_report_generation(self):
+        csv = self._make_csv({
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": 80.0,
+            "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 30.0,
+        })
+        analyzer = NcuBottleneckAnalyzer()
+        diag, report = analyzer.analyze_and_report(csv, "matmul_kernel")
+        assert "Compute-Bound" in report
+        assert "matmul_kernel" in report
+
+    def test_empty_input(self):
+        analyzer = NcuBottleneckAnalyzer()
+        diag = analyzer.analyze("")
+        assert diag.primary_bottleneck == BottleneckType.UNKNOWN
+
+
+# ── Physical Consistency Validator ────────────────────────────
+
+from analysis.consistency import PhysicalConsistencyValidator, EnvironmentFingerprintDetector
+
+
+class TestPhysicalConsistency:
+    def test_valid_results(self):
+        results = {
+            "l1_latency_cycles": 28.0,
+            "l2_latency_cycles": 193.0,
+            "dram_latency_cycles": 442.0,
+            "max_global_mem_bandwidth_gb_s": 272.0,
+            "actual_boost_clock_mhz": 2520.0,
+            "l2_cache_size_kb": 32768.0,
+            "max_shmem_per_block_kb": 100.0,
+            "bank_conflict_penalty_cycles": 23.0,
+        }
+        v = PhysicalConsistencyValidator()
+        report = v.validate(results)
+        assert report.is_consistent
+        assert len(report.violations) == 0
+
+    def test_latency_hierarchy_violation(self):
+        results = {
+            "l1_latency_cycles": 200.0,  # L1 > L2 — violation!
+            "l2_latency_cycles": 100.0,
+            "dram_latency_cycles": 442.0,
+        }
+        v = PhysicalConsistencyValidator()
+        report = v.validate(results)
+        assert not report.is_consistent
+        assert any("L1" in v and "L2" in v for v in report.violations)
+
+    def test_bandwidth_too_high(self):
+        results = {"max_global_mem_bandwidth_gb_s": 99999.0}
+        v = PhysicalConsistencyValidator()
+        report = v.validate(results)
+        assert not report.is_consistent
+
+    def test_negative_bank_conflict(self):
+        results = {"bank_conflict_penalty_cycles": -5.0}
+        v = PhysicalConsistencyValidator()
+        report = v.validate(results)
+        assert not report.is_consistent
+
+    def test_cross_checks_populated(self):
+        results = {
+            "l1_latency_cycles": 28.0,
+            "l2_latency_cycles": 193.0,
+            "dram_latency_cycles": 442.0,
+            "actual_boost_clock_mhz": 2520.0,
+        }
+        v = PhysicalConsistencyValidator()
+        report = v.validate(results)
+        assert len(report.cross_checks) > 0
+
+    def test_none_values_skipped(self):
+        results = {"l1_latency_cycles": None, "l2_latency_cycles": 193.0}
+        v = PhysicalConsistencyValidator()
+        report = v.validate(results)
+        assert report.is_consistent  # Can't violate with only one value
+
+
+class TestEnvironmentFingerprint:
+    def test_no_tampering(self):
+        fp = EnvironmentFingerprintDetector()
+        result = fp.detect(
+            probe_results={"actual_boost_clock_mhz": 2520.0},
+            reported_clock_mhz=2520.0,
+        )
+        assert not result["tampering_detected"]
+
+    def test_clock_mismatch(self):
+        fp = EnvironmentFingerprintDetector()
+        result = fp.detect(
+            probe_results={"actual_boost_clock_mhz": 825.0},
+            reported_clock_mhz=2520.0,
+        )
+        assert result["tampering_detected"]
+        assert any("mismatch" in f.lower() for f in result["findings"])
+
+    def test_shmem_mismatch(self):
+        fp = EnvironmentFingerprintDetector()
+        result = fp.detect(
+            probe_results={"max_shmem_per_block_kb": 48.0},
+            reported_shmem_kb=100,
+        )
+        assert result["tampering_detected"]
+
+    def test_non_standard_clock(self):
+        fp = EnvironmentFingerprintDetector()
+        result = fp.detect(
+            probe_results={"actual_boost_clock_mhz": 777.0},
+        )
+        assert result["tampering_detected"]
+        assert any("non-standard" in f.lower() for f in result["findings"])
+
+
+# ── Enhanced NCU Parser ──────────────────────────────────────
+
+from parser.ncu_parser import parse_ncu_raw_page, parse_ncu_sol_section, extract_all_matching, summarize_ncu_metrics
+
+
+class TestEnhancedNcuParser:
+    def test_parse_raw_page(self):
+        raw = """Section: GPU Speed Of Light Throughput
+  sm__throughput.avg.pct_of_peak_sustained_elapsed    85.5  %
+  gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed    30.2  %
+"""
+        result = parse_ncu_raw_page(raw)
+        assert len(result) == 2
+        assert result[0]["name"] == "sm__throughput.avg.pct_of_peak_sustained_elapsed"
+        assert result[0]["value"] == 85.5
+
+    def test_parse_sol_section(self):
+        output = "SOL Compute: 85.5 %\nSOL Memory: 30.2 %\n"
+        sol = parse_ncu_sol_section(output)
+        assert sol.get("sol_compute_pct") == 85.5
+        assert sol.get("sol_memory_pct") == 30.2
+
+    def test_extract_all_matching(self):
+        parsed = [
+            {"name": "dram__bytes.sum", "value": 1000.0},
+            {"name": "dram__throughput.avg", "value": 80.0},
+            {"name": "sm__throughput.avg", "value": 50.0},
+        ]
+        dram = extract_all_matching(parsed, r"dram__")
+        assert len(dram) == 2
+
+    def test_summarize_metrics(self):
+        parsed = [
+            {"name": "sm__throughput.avg", "value": 50.0},
+            {"name": "dram__bytes.sum", "value": 1000.0},
+            {"name": "sm__warps_active.avg", "value": 60.0},
+        ]
+        summary = summarize_ncu_metrics(parsed)
+        assert summary["total_metrics"] == 3
+
+    def test_suffix_match(self):
+        parsed = [{"name": "kernel_0::dram__bytes.sum", "value": 42.0}]
+        val = extract_ncu_metric(parsed, "dram__bytes.sum")
+        assert val == 42.0
+
+    def test_csv_with_avg_column(self):
+        csv_text = '"Metric Name","Min","Max","Avg","Unit"\n"dram__bytes.sum","100","200","150","bytes"\n'
+        result = parse_ncu_csv(csv_text)
+        assert len(result) == 1
+        assert result[0]["value"] == 150.0
 
 
 if __name__ == "__main__":

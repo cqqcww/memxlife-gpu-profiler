@@ -132,7 +132,12 @@ class AnalyzerAgent(BaseAgent):
                 final_value = llm_value
                 confidence = llm_analysis.get("confidence", 0.4)
         elif deterministic_value is not None:
-            confidence = 0.5  # Parsed but no LLM confirmation
+            # Parsed successfully but no LLM confirmation available.
+            # If value is in physical bounds, trust the deterministic parse.
+            if calibration["in_bounds"]:
+                confidence = 0.75
+            else:
+                confidence = 0.5
 
         # Apply calibration penalty
         if not calibration["in_bounds"]:
