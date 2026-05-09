@@ -44,6 +44,11 @@ class AgentSettings:
     work_dir: Path
     optimized_path: Path
     history_path: Path
+    summary_path: Path
+    report_path: Path
+    output_log_path: Path
+    output_id_path: Path
+    target_spec_path: Path
     max_minutes: float = 28.0
     rank: int = 16
     benchmark_sizes: list[int] = field(default_factory=lambda: [3584, 4096, 4608])
@@ -65,6 +70,10 @@ class AgentSettings:
             work_dir=work_dir,
             optimized_path=repo_root / "optimized_lora.cu",
             history_path=work_dir / "history.json",
+            summary_path=work_dir / "summary.json",
+            report_path=repo_root / "report2.md",
+            output_log_path=repo_root / "output.md",
+            output_id_path=repo_root / "output_id2.txt",
+            target_spec_path=Path("/target/target_spec.json"),
             llm=LLMSettings(api_key=api_key, base_url=base_url.rstrip("/"), model=model),
         )
-

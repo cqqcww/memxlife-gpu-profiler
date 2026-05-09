@@ -32,6 +32,11 @@ entries = {
         "Port": "30148",
         "User": user_name,
     },
+    "mlsys-submit": {
+        "HostName": "10.176.37.31",
+        "Port": "22",
+        "User": user_name,
+    },
 }
 
 existing = config_path.read_text(encoding="utf-8")

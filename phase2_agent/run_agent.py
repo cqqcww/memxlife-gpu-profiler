@@ -16,8 +16,7 @@ def main() -> int:
     settings = AgentSettings.from_repo_root(REPO_ROOT)
     agent = LoRAOptimizationAgent(settings)
     code = agent.run()
-    summary_path = settings.work_dir / "summary.json"
-    summary_path.write_text(json.dumps(agent.summary(), indent=2), encoding="utf-8")
+    settings.summary_path.write_text(json.dumps(agent.summary(), indent=2), encoding="utf-8")
     print(json.dumps(agent.summary(), indent=2))
     return code
 

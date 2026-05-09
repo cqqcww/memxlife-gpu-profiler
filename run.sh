@@ -8,4 +8,5 @@ cd "$ROOT_DIR"
 export PYTHONUNBUFFERED=1
 export PYTHONPYCACHEPREFIX="${ROOT_DIR}/.phase2_work/pycache"
 
-python3 -m phase2_agent.run_agent
+LOG_PATH="${ROOT_DIR}/results.log"
+python3 -m phase2_agent.run_agent 2>&1 | tee "${LOG_PATH}"
