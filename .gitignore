@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.DS_Store
+runs/
+*.egg-info/
+.env
+/tmp/
+api_config.py
+build/
+build_wsl/
+.phase2_work/
+phase2_runs/
+optimized_lora_autogen/

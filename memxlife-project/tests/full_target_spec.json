@@ -1,0 +1,13 @@
+{
+    "targets": [
+        "dram_latency_cycles",
+        "l1_latency_cycles",
+        "l2_latency_cycles",
+        "l2_cache_size_kb",
+        "max_global_mem_bandwidth_gb_s",
+        "max_shmem_bandwidth_gb_s",
+        "actual_boost_clock_mhz",
+        "bank_conflict_penalty_cycles",
+        "max_shmem_per_block_kb"
+    ]
+}

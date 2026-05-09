@@ -1,0 +1,34 @@
+{
+  "results": {
+    "launch__sm_count": 82.0,
+    "dram__bytes_read.sum.per_second": 777875359500.6122,
+    "dram__bytes_write.sum.per_second": 816647976272.0361,
+    "device__attribute_max_gpu_frequency_khz": 2100000.0,
+    "device__attribute_max_mem_frequency_khz": 9751000.0,
+    "device__attribute_fb_bus_width": 384.0,
+    "sm__throughput.avg.pct_of_peak_sustained_elapsed": 29.363219,
+    "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 83.709584
+  },
+  "reasoning": "GPU: NVIDIA GeForce RTX 3090, Driver: 575.57.08, CUDA: 12.9. Each metric measured via LLM-generated CUDA micro-benchmarks. Physical consistency: PASSED. Trust level: untrusted.",
+  "environment": {
+    "gpu_name": "NVIDIA GeForce RTX 3090",
+    "driver_version": "575.57.08",
+    "cuda_version": "12.9",
+    "trust_level": "untrusted",
+    "anomalies": []
+  },
+  "consistency_check": {
+    "is_consistent": true,
+    "violations": [],
+    "warnings": [],
+    "cross_checks": [],
+    "confidence_adjustments": {}
+  },
+  "fingerprint": {
+    "tampering_detected": false,
+    "trust_level": "verified",
+    "findings": [],
+    "trust_assessment": {},
+    "recommendation": "Measured and reported values are consistent"
+  }
+}

@@ -1,0 +1,7 @@
+{
+    "targets": [
+        "dram_latency_cycles",
+        "l2_cache_size_kb",
+        "actual_boost_clock_mhz"
+    ]
+}

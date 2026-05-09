@@ -1,0 +1,193 @@
+{
+  "results": {
+    "launch__sm_count": 82.0,
+    "dram__bytes_read.sum.per_second": 784862249113.0,
+    "dram__bytes_write.sum.per_second": 804122678422.0,
+    "device__attribute_max_gpu_frequency_khz": 2100000.0,
+    "device__attribute_max_mem_frequency_khz": 9751000.0,
+    "device__attribute_fb_bus_width": 384.0,
+    "sm__throughput.avg.pct_of_peak_sustained_elapsed": 60.171886,
+    "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 84.467135
+  },
+  "reasoning": "GPU: NVIDIA GeForce RTX 3090, Driver: 575.57.08, CUDA: 12.9. Metrics measured using a multi-agent architecture with hardcoded CUDA micro-benchmarks for critical metrics (SM count, DRAM bandwidth, bus width, frequencies) and LLM-generated probes for throughput percentages. Physical consistency: PASSED. Verifier: pass (0 issues). Judge: low confidence, accept. Trust level: untrusted.",
+  "environment": {
+    "gpu_name": "NVIDIA GeForce RTX 3090",
+    "driver_version": "575.57.08",
+    "cuda_version": "12.9",
+    "trust_level": "untrusted",
+    "anomalies": []
+  },
+  "environment_notes": {
+    "api_reported_device_properties": {
+      "name": "NVIDIA GeForce RTX 3090",
+      "clockRateKHz": 1395000,
+      "memoryClockRateKHz": 9751000
+    },
+    "measured_vs_reported": {}
+  },
+  "consistency_check": {
+    "is_consistent": true,
+    "violations": [],
+    "warnings": [],
+    "cross_checks": [
+      {
+        "check": "dram_read_write_ratio",
+        "read_gbs": 784.9,
+        "write_gbs": 804.1,
+        "ratio": 1.02,
+        "passed": true
+      },
+      {
+        "check": "theoretical_peak_bandwidth",
+        "peak_gbs": 936.1,
+        "bus_width_bits": 384.0,
+        "mem_freq_khz": 9751000.0
+      }
+    ],
+    "confidence_adjustments": {}
+  },
+  "fingerprint": {
+    "tampering_detected": false,
+    "trust_level": "verified",
+    "findings": [],
+    "trust_assessment": {},
+    "recommendation": "Measured and reported values are consistent"
+  },
+  "verifier_report": {
+    "status": "pass",
+    "issues": [],
+    "notes": [
+      "SM count 82 is plausible",
+      "DRAM read/write ratio 1.02x is within normal range",
+      "Theoretical peak bandwidth: 936.1 GB/s",
+      "DRAM read: 784.9 GB/s = 83.8% of peak",
+      "DRAM write: 804.1 GB/s = 85.9% of peak",
+      "SM throughput 60.2% is in valid range",
+      "Memory throughput 84.5% is in valid range",
+      "GPU frequency 2100 MHz is reasonable",
+      "Bus width 384 bits is a standard value"
+    ],
+    "suggested_followups": [],
+    "summary": "Verified 8 metrics. All checks passed. SM count 82 is plausible DRAM read/write ratio 1.02x is within normal range Theoretical peak bandwidth: 936.1 GB/s"
+  },
+  "judge_report": {
+    "confidence": "low",
+    "status": "accept",
+    "report_notes": [
+      "Failed to parse LLM judge response"
+    ],
+    "summary": "Accept with low confidence \u2014 LLM judge response unparseable"
+  },
+  "probe_plan": [
+    {
+      "metric": "dram__bytes_read.sum.per_second",
+      "strategy": "hardcoded_probe",
+      "source": "pre-written CUDA kernel",
+      "description": "Streaming read of 256MB float array across all SMs. 20 trials with cudaEvent timing, report best (peak) bandwidth."
+    },
+    {
+      "metric": "device__attribute_max_gpu_frequency_khz",
+      "strategy": "hardcoded_probe",
+      "source": "pre-written CUDA kernel",
+      "description": "Query nvidia-smi for clocks.max.graphics (actual GPU boost clock), convert MHz to kHz."
+    },
+    {
+      "metric": "sm__throughput.avg.pct_of_peak_sustained_elapsed",
+      "strategy": "hardcoded_probe",
+      "source": "pre-written CUDA kernel",
+      "description": "FMA-heavy kernel with 8 independent chains per thread on 512 blocks x 256 threads. Measures achieved TFLOPS vs RTX 3090 peak (35.58 TFLOPS)."
+    },
+    {
+      "metric": "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed",
+      "strategy": "hardcoded_probe",
+      "source": "pre-written CUDA kernel",
+      "description": "Streaming read of 512MB, measures achieved bandwidth as percentage of RTX 3090 peak (936.2 GB/s)."
+    },
+    {
+      "metric": "dram__bytes_write.sum.per_second",
+      "strategy": "hardcoded_probe",
+      "source": "pre-written CUDA kernel",
+      "description": "Streaming write of 256MB float array across all SMs. 20 trials with cudaEvent timing, report best (peak) bandwidth."
+    },
+    {
+      "metric": "device__attribute_fb_bus_width",
+      "strategy": "hardcoded_probe",
+      "source": "pre-written CUDA kernel",
+      "description": "Direct CUDA API query for memory bus width via cudaDeviceGetAttribute."
+    },
+    {
+      "metric": "device__attribute_max_mem_frequency_khz",
+      "strategy": "hardcoded_probe",
+      "source": "pre-written CUDA kernel",
+      "description": "Query nvidia-smi for clocks.max.memory, convert MHz to kHz."
+    },
+    {
+      "metric": "launch__sm_count",
+      "strategy": "hardcoded_probe",
+      "source": "pre-written CUDA kernel",
+      "description": "Launch 4096 single-thread blocks, each reads %%smid via inline PTX. Count unique SM IDs across 5 trials, take maximum."
+    }
+  ],
+  "measurement_methodology": {
+    "launch__sm_count": {
+      "method": "hardcoded_probe",
+      "description": "Launch 4096 single-thread blocks, each reads %%smid via inline PTX. Count unique SM IDs across 5 trials, take maximum.",
+      "source": "pre-written tested CUDA kernel"
+    },
+    "dram__bytes_read.sum.per_second": {
+      "method": "hardcoded_probe",
+      "description": "Streaming read of 256MB float array across all SMs. 20 trials with cudaEvent timing, report best (peak) bandwidth.",
+      "source": "pre-written tested CUDA kernel"
+    },
+    "dram__bytes_write.sum.per_second": {
+      "method": "hardcoded_probe",
+      "description": "Streaming write of 256MB float array across all SMs. 20 trials with cudaEvent timing, report best (peak) bandwidth.",
+      "source": "pre-written tested CUDA kernel"
+    },
+    "device__attribute_max_gpu_frequency_khz": {
+      "method": "hardcoded_probe",
+      "description": "Query nvidia-smi for clocks.max.graphics (actual GPU boost clock), convert MHz to kHz.",
+      "source": "pre-written tested CUDA kernel"
+    },
+    "device__attribute_max_mem_frequency_khz": {
+      "method": "hardcoded_probe",
+      "description": "Query nvidia-smi for clocks.max.memory, convert MHz to kHz.",
+      "source": "pre-written tested CUDA kernel"
+    },
+    "device__attribute_fb_bus_width": {
+      "method": "hardcoded_probe",
+      "description": "Direct CUDA API query for memory bus width via cudaDeviceGetAttribute.",
+      "source": "pre-written tested CUDA kernel"
+    },
+    "sm__throughput.avg.pct_of_peak_sustained_elapsed": {
+      "method": "hardcoded_probe",
+      "description": "FMA-heavy kernel with 8 independent chains per thread on 512 blocks x 256 threads. Measures achieved TFLOPS vs RTX 3090 peak (35.58 TFLOPS).",
+      "source": "pre-written tested CUDA kernel"
+    },
+    "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": {
+      "method": "hardcoded_probe",
+      "description": "Streaming read of 512MB, measures achieved bandwidth as percentage of RTX 3090 peak (936.2 GB/s).",
+      "source": "pre-written tested CUDA kernel"
+    }
+  },
+  "cross_checks": [
+    {
+      "check": "dram_read_write_ratio",
+      "read_gbs": 784.9,
+      "write_gbs": 804.1,
+      "ratio": 1.02,
+      "passed": true
+    },
+    {
+      "check": "theoretical_peak_bandwidth",
+      "peak_gbs": 936.1,
+      "bus_width_bits": 384.0,
+      "mem_freq_khz": 9751000.0
+    },
+    {
+      "check": "verifier",
+      "status": "pass",
+      "issues": []
+    }
+  ]
+}
