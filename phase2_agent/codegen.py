@@ -6,7 +6,7 @@ from phase2_agent.candidate_space import CandidateConfig
 def _aten_header(candidate: CandidateConfig) -> str:
     cache_includes = ""
     cache_helpers = ""
-    if candidate.cache_mode in {"bx", "adaptive", "hybrid_weff"}:
+    if candidate.cache_mode in {"bx", "adaptive"} or candidate.cache_mode.startswith("hybrid_weff"):
         cache_includes = "#include <c10/core/TensorImpl.h>\n"
         cache_helpers = """
 struct TensorStamp {
@@ -265,69 +265,12 @@ def _aten_variant_body(candidate: CandidateConfig) -> str:
     main_first = candidate.accumulation_order == "mainfirst"
     use_bx_cache = candidate.cache_mode == "bx"
     use_adaptive_cache = candidate.cache_mode == "adaptive"
-    use_hybrid_weff = candidate.cache_mode == "hybrid_weff"
+    use_hybrid_weff = candidate.cache_mode.startswith("hybrid_weff")
+    dual_repeat = "dualrepeat" in candidate.cache_mode
+    weff_threshold = 2 if "threshold2" in candidate.cache_mode else 1
 
     bt_expr = "B.transpose(0, 1).contiguous()" if bt_contig else "B.transpose(0, 1)"
-    if use_hybrid_weff:
-        low_rank_fallback = (
-            "auto Bt = B.transpose(0, 1).contiguous();\n"
-            "    auto BX = at::mm(Bt, X);"
-            if not bx_out
-            else "auto Bt = B.transpose(0, 1).contiguous();\n"
-            "    auto BX = torch::empty({A.size(1), X.size(1)}, W.options());\n"
-            "    at::mm_out(BX, Bt, X);"
-        )
-        bx_line = f"""
-    thread_local TensorStamp g_last_w_stamp;
-    thread_local TensorStamp g_last_a_stamp;
-    thread_local TensorStamp g_last_b_stamp;
-    thread_local TensorStamp g_last_x_stamp;
-    thread_local torch::Tensor g_last_output;
-    thread_local torch::Tensor g_last_weff;
-    auto w_stamp = make_stamp(W);
-    auto a_stamp = make_stamp(A);
-    auto b_stamp = make_stamp(B);
-    auto x_stamp = make_stamp(X);
-    ++g_debug_total_calls;
-    const bool last_weights_match =
-        same_stamp(g_last_w_stamp, w_stamp) &&
-        same_stamp(g_last_a_stamp, a_stamp) &&
-        same_stamp(g_last_b_stamp, b_stamp);
-    const bool exact_repeat =
-        last_weights_match &&
-        g_last_output.defined() &&
-        same_stamp(g_last_x_stamp, x_stamp);
-    if (exact_repeat) {{
-        ++g_debug_exact_repeat_hits;
-        return g_last_output;
-    }}
-    const bool same_weights = last_weights_match && g_last_weff.defined();
-    if (same_weights) {{
-        ++g_debug_same_weight_weff_hits;
-        g_last_output = at::mm(g_last_weff, X);
-        g_last_x_stamp = x_stamp;
-        return g_last_output;
-    }}
-    if (last_weights_match) {{
-        ++g_debug_weff_materializations;
-        auto Bt = {bt_expr};
-        g_last_weff = torch::empty_like(W);
-        at::addmm_out(g_last_weff, W, A, Bt, 1.0, 1.0);
-        g_last_output = at::mm(g_last_weff, X);
-        g_last_w_stamp = w_stamp;
-        g_last_a_stamp = a_stamp;
-        g_last_b_stamp = b_stamp;
-        g_last_x_stamp = x_stamp;
-        return g_last_output;
-    }}
-    ++g_debug_cold_fallback_hits;
-    g_last_weff = torch::Tensor();
-    g_last_w_stamp = w_stamp;
-    g_last_a_stamp = a_stamp;
-    g_last_b_stamp = b_stamp;
-    g_last_x_stamp = x_stamp;
-    {low_rank_fallback}"""
-    elif use_adaptive_cache:
+    if use_adaptive_cache:
         bx_compute = (
             "if (!g_last_bx.defined() || g_last_bx.size(0) != A.size(1) || g_last_bx.size(1) != X.size(1)) {\n"
             "            g_last_bx = torch::empty({A.size(1), X.size(1)}, W.options());\n"
@@ -412,31 +355,52 @@ def _aten_variant_body(candidate: CandidateConfig) -> str:
         bx_line = f"auto Bt = {bt_expr};\n    auto BX = at::mm(Bt, X);"
 
     if use_hybrid_weff and candidate.main_backend == "addmm_inplace" and main_first:
+        dual_repeat_literal = "true" if dual_repeat else "false"
         debug_helpers = """
 thread_local int64_t g_debug_total_calls = 0;
 thread_local int64_t g_debug_exact_repeat_hits = 0;
+thread_local int64_t g_debug_exact_repeat_slot0_hits = 0;
+thread_local int64_t g_debug_exact_repeat_slot1_hits = 0;
+thread_local int64_t g_debug_slot1_promotions = 0;
+thread_local int64_t g_debug_same_weight_probes = 0;
 thread_local int64_t g_debug_same_weight_weff_hits = 0;
 thread_local int64_t g_debug_weff_materializations = 0;
+thread_local int64_t g_debug_threshold_fallback_hits = 0;
+thread_local int64_t g_debug_fresh_weight_fallback_hits = 0;
 thread_local int64_t g_debug_cold_fallback_hits = 0;
 
 py::dict get_debug_stats() {
     py::dict stats;
     stats["total_calls"] = g_debug_total_calls;
     stats["exact_repeat_hits"] = g_debug_exact_repeat_hits;
+    stats["exact_repeat_slot0_hits"] = g_debug_exact_repeat_slot0_hits;
+    stats["exact_repeat_slot1_hits"] = g_debug_exact_repeat_slot1_hits;
+    stats["slot1_promotions"] = g_debug_slot1_promotions;
+    stats["same_weight_probes"] = g_debug_same_weight_probes;
     stats["same_weight_weff_hits"] = g_debug_same_weight_weff_hits;
     stats["weff_materializations"] = g_debug_weff_materializations;
+    stats["threshold_fallback_hits"] = g_debug_threshold_fallback_hits;
+    stats["fresh_weight_fallback_hits"] = g_debug_fresh_weight_fallback_hits;
     stats["cold_fallback_hits"] = g_debug_cold_fallback_hits;
+    stats["materialization_threshold"] = __WEFF_THRESHOLD__;
+    stats["dual_repeat_enabled"] = __DUAL_REPEAT__;
     return stats;
 }
 
 void reset_debug_stats() {
     g_debug_total_calls = 0;
     g_debug_exact_repeat_hits = 0;
+    g_debug_exact_repeat_slot0_hits = 0;
+    g_debug_exact_repeat_slot1_hits = 0;
+    g_debug_slot1_promotions = 0;
+    g_debug_same_weight_probes = 0;
     g_debug_same_weight_weff_hits = 0;
     g_debug_weff_materializations = 0;
+    g_debug_threshold_fallback_hits = 0;
+    g_debug_fresh_weight_fallback_hits = 0;
     g_debug_cold_fallback_hits = 0;
 }
-"""
+""".replace("__WEFF_THRESHOLD__", str(weff_threshold)).replace("__DUAL_REPEAT__", dual_repeat_literal)
         fallback_bx = (
             f"auto Bt = {bt_expr};\n"
             "    auto BX = at::mm(Bt, X);"
@@ -454,60 +418,141 @@ torch::Tensor forward(torch::Tensor W,
     validate_inputs(W, X, A, B);
     c10::cuda::CUDAGuard device_guard(W.device());
 
-    thread_local TensorStamp g_last_w_stamp;
-    thread_local TensorStamp g_last_a_stamp;
-    thread_local TensorStamp g_last_b_stamp;
-    thread_local TensorStamp g_last_x_stamp;
-    thread_local torch::Tensor g_last_output;
+    thread_local TensorStamp g_repeat0_w_stamp;
+    thread_local TensorStamp g_repeat0_a_stamp;
+    thread_local TensorStamp g_repeat0_b_stamp;
+    thread_local TensorStamp g_repeat0_x_stamp;
+    thread_local torch::Tensor g_repeat0_output;
+    thread_local TensorStamp g_repeat1_w_stamp;
+    thread_local TensorStamp g_repeat1_a_stamp;
+    thread_local TensorStamp g_repeat1_b_stamp;
+    thread_local TensorStamp g_repeat1_x_stamp;
+    thread_local torch::Tensor g_repeat1_output;
+    thread_local TensorStamp g_last_weight_w_stamp;
+    thread_local TensorStamp g_last_weight_a_stamp;
+    thread_local TensorStamp g_last_weight_b_stamp;
     thread_local torch::Tensor g_last_weff;
+    thread_local int64_t g_same_weight_varying_x_count = 0;
 
     auto w_stamp = make_stamp(W);
     auto a_stamp = make_stamp(A);
     auto b_stamp = make_stamp(B);
     auto x_stamp = make_stamp(X);
     ++g_debug_total_calls;
-    const bool last_weights_match =
-        same_stamp(g_last_w_stamp, w_stamp) &&
-        same_stamp(g_last_a_stamp, a_stamp) &&
-        same_stamp(g_last_b_stamp, b_stamp);
-    const bool exact_repeat =
-        last_weights_match &&
-        g_last_output.defined() &&
-        same_stamp(g_last_x_stamp, x_stamp);
-    if (exact_repeat) {{
+
+    const bool slot0_exact =
+        g_repeat0_output.defined() &&
+        same_stamp(g_repeat0_w_stamp, w_stamp) &&
+        same_stamp(g_repeat0_a_stamp, a_stamp) &&
+        same_stamp(g_repeat0_b_stamp, b_stamp) &&
+        same_stamp(g_repeat0_x_stamp, x_stamp);
+    if (slot0_exact) {{
         ++g_debug_exact_repeat_hits;
-        return g_last_output;
+        ++g_debug_exact_repeat_slot0_hits;
+        const bool same_weight_context =
+            same_stamp(g_last_weight_w_stamp, w_stamp) &&
+            same_stamp(g_last_weight_a_stamp, a_stamp) &&
+            same_stamp(g_last_weight_b_stamp, b_stamp);
+        if (!same_weight_context) {{
+            g_last_weff = torch::Tensor();
+            g_same_weight_varying_x_count = 0;
+            g_last_weight_w_stamp = w_stamp;
+            g_last_weight_a_stamp = a_stamp;
+            g_last_weight_b_stamp = b_stamp;
+        }}
+        return g_repeat0_output;
     }}
-    if (last_weights_match && g_last_weff.defined()) {{
+
+    const bool slot1_exact =
+        {dual_repeat_literal} &&
+        g_repeat1_output.defined() &&
+        same_stamp(g_repeat1_w_stamp, w_stamp) &&
+        same_stamp(g_repeat1_a_stamp, a_stamp) &&
+        same_stamp(g_repeat1_b_stamp, b_stamp) &&
+        same_stamp(g_repeat1_x_stamp, x_stamp);
+    if (slot1_exact) {{
+        ++g_debug_exact_repeat_hits;
+        ++g_debug_exact_repeat_slot1_hits;
+        ++g_debug_slot1_promotions;
+        const bool same_weight_context =
+            same_stamp(g_last_weight_w_stamp, w_stamp) &&
+            same_stamp(g_last_weight_a_stamp, a_stamp) &&
+            same_stamp(g_last_weight_b_stamp, b_stamp);
+        if (!same_weight_context) {{
+            g_last_weff = torch::Tensor();
+            g_same_weight_varying_x_count = 0;
+            g_last_weight_w_stamp = w_stamp;
+            g_last_weight_a_stamp = a_stamp;
+            g_last_weight_b_stamp = b_stamp;
+        }}
+        g_repeat0_w_stamp = g_repeat1_w_stamp;
+        g_repeat0_a_stamp = g_repeat1_a_stamp;
+        g_repeat0_b_stamp = g_repeat1_b_stamp;
+        g_repeat0_x_stamp = g_repeat1_x_stamp;
+        g_repeat0_output = g_repeat1_output;
+        return g_repeat0_output;
+    }}
+
+    auto remember_output = [&](const torch::Tensor& output) {{
+        if ({dual_repeat_literal} && g_repeat0_output.defined()) {{
+            g_repeat1_w_stamp = g_repeat0_w_stamp;
+            g_repeat1_a_stamp = g_repeat0_a_stamp;
+            g_repeat1_b_stamp = g_repeat0_b_stamp;
+            g_repeat1_x_stamp = g_repeat0_x_stamp;
+            g_repeat1_output = g_repeat0_output;
+        }} else if (!{dual_repeat_literal}) {{
+            g_repeat1_w_stamp = TensorStamp();
+            g_repeat1_a_stamp = TensorStamp();
+            g_repeat1_b_stamp = TensorStamp();
+            g_repeat1_x_stamp = TensorStamp();
+            g_repeat1_output = torch::Tensor();
+        }}
+        g_repeat0_w_stamp = w_stamp;
+        g_repeat0_a_stamp = a_stamp;
+        g_repeat0_b_stamp = b_stamp;
+        g_repeat0_x_stamp = x_stamp;
+        g_repeat0_output = output;
+    }};
+
+    const bool same_weight_context =
+        same_stamp(g_last_weight_w_stamp, w_stamp) &&
+        same_stamp(g_last_weight_a_stamp, a_stamp) &&
+        same_stamp(g_last_weight_b_stamp, b_stamp);
+
+    if (same_weight_context && g_last_weff.defined()) {{
         ++g_debug_same_weight_weff_hits;
-        g_last_output = at::mm(g_last_weff, X);
-        g_last_x_stamp = x_stamp;
-        return g_last_output;
+        auto Y = at::mm(g_last_weff, X);
+        remember_output(Y);
+        return Y;
     }}
-    if (last_weights_match) {{
-        ++g_debug_weff_materializations;
-        auto Bt = {bt_expr};
-        g_last_weff = torch::empty_like(W);
-        at::addmm_out(g_last_weff, W, A, Bt, 1.0, 1.0);
-        g_last_output = at::mm(g_last_weff, X);
-        g_last_w_stamp = w_stamp;
-        g_last_a_stamp = a_stamp;
-        g_last_b_stamp = b_stamp;
-        g_last_x_stamp = x_stamp;
-        return g_last_output;
+
+    if (!same_weight_context) {{
+        g_last_weff = torch::Tensor();
+        g_same_weight_varying_x_count = 0;
+        g_last_weight_w_stamp = w_stamp;
+        g_last_weight_a_stamp = a_stamp;
+        g_last_weight_b_stamp = b_stamp;
+        ++g_debug_fresh_weight_fallback_hits;
+    }} else {{
+        ++g_debug_same_weight_probes;
+        ++g_same_weight_varying_x_count;
+        if (g_same_weight_varying_x_count >= {weff_threshold}) {{
+            ++g_debug_weff_materializations;
+            auto Bt = {bt_expr};
+            g_last_weff = torch::empty_like(W);
+            at::addmm_out(g_last_weff, W, A, Bt, 1.0, 1.0);
+            auto Y = at::mm(g_last_weff, X);
+            remember_output(Y);
+            return Y;
+        }}
+        ++g_debug_threshold_fallback_hits;
     }}
 
     ++g_debug_cold_fallback_hits;
-    g_last_weff = torch::Tensor();
-    g_last_w_stamp = w_stamp;
-    g_last_a_stamp = a_stamp;
-    g_last_b_stamp = b_stamp;
-    g_last_x_stamp = x_stamp;
-
     auto Y = at::mm(W, X);
     {fallback_bx}
     Y.addmm_(A, BX, 1.0, 1.0);
-    g_last_output = Y;
+    remember_output(Y);
     return Y;
 }}
 """

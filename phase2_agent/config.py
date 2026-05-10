@@ -57,7 +57,7 @@ class AgentSettings:
     correctness_sizes: list[int] = field(default_factory=lambda: [3584, 4096, 4608])
     warmup: int = 3
     benchmark_iters: int = 7
-    max_candidates: int = 1
+    max_candidates: int = 6
     llm_round_limit: int = 0
     llm: LLMSettings = field(default_factory=LLMSettings)
 
