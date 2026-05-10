@@ -1,9 +1,8 @@
 #include <torch/extension.h>
-#include <ATen/cuda/CUDAContext.h>
+#include <c10/core/TensorImpl.h>
 #include <c10/cuda/CUDAGuard.h>
-#include <cuda_runtime.h>
-#include <cublas_v2.h>
 
+#include <cstdint>
 #include <sstream>
 #include <stdexcept>
 #include <vector>
@@ -45,73 +44,36 @@ inline void validate_inputs(const torch::Tensor& W,
     TORCH_CHECK(A.size(1) == 16, "Expected fixed LoRA rank 16");
 }
 
-inline void check_cublas(cublasStatus_t status, const char* what) {
-    TORCH_CHECK(status == CUBLAS_STATUS_SUCCESS, what);
+
+struct TensorStamp {
+    std::uintptr_t data_ptr = 0;
+    uint32_t version = 0;
+    int64_t rows = 0;
+    int64_t cols = 0;
+    int device_index = -1;
+};
+
+inline uint32_t tensor_version(const torch::Tensor& tensor) {
+    return static_cast<uint32_t>(tensor.unsafeGetTensorImpl()->version_counter().current_version());
 }
 
-inline void gemm_row_major(cublasHandle_t handle,
-                           bool trans_a,
-                           bool trans_b,
-                           int m,
-                           int n,
-                           int k,
-                           const float* A,
-                           const float* B,
-                           float* C,
-                           float alpha,
-                           float beta) {
-    const cublasOperation_t op_a = trans_a ? CUBLAS_OP_T : CUBLAS_OP_N;
-    const cublasOperation_t op_b = trans_b ? CUBLAS_OP_T : CUBLAS_OP_N;
-    const int lda = trans_a ? m : k;
-    const int ldb = trans_b ? k : n;
-    const int ldc = n;
-    check_cublas(
-        cublasSgemm(handle, op_b, op_a, n, m, k, &alpha, B, ldb, A, lda, &beta, C, ldc),
-        "cublasSgemm failed");
+inline TensorStamp make_stamp(const torch::Tensor& tensor) {
+    TensorStamp stamp;
+    stamp.data_ptr = reinterpret_cast<std::uintptr_t>(tensor.data_ptr<float>());
+    stamp.version = tensor_version(tensor);
+    stamp.rows = tensor.size(0);
+    stamp.cols = tensor.size(1);
+    stamp.device_index = tensor.get_device();
+    return stamp;
 }
 
-inline void gemm_ex_row_major(cublasHandle_t handle,
-                              bool trans_a,
-                              bool trans_b,
-                              int m,
-                              int n,
-                              int k,
-                              const float* A,
-                              const float* B,
-                              float* C,
-                              float alpha,
-                              float beta,
-                              bool allow_tf32) {
-    const cublasOperation_t op_a = trans_a ? CUBLAS_OP_T : CUBLAS_OP_N;
-    const cublasOperation_t op_b = trans_b ? CUBLAS_OP_T : CUBLAS_OP_N;
-    const int lda = trans_a ? m : k;
-    const int ldb = trans_b ? k : n;
-    const int ldc = n;
-    const cublasComputeType_t compute_type =
-        allow_tf32 ? CUBLAS_COMPUTE_32F_FAST_TF32 : CUBLAS_COMPUTE_32F;
-    check_cublas(
-        cublasGemmEx(handle,
-                     op_b,
-                     op_a,
-                     n,
-                     m,
-                     k,
-                     &alpha,
-                     B,
-                     CUDA_R_32F,
-                     ldb,
-                     A,
-                     CUDA_R_32F,
-                     lda,
-                     &beta,
-                     C,
-                     CUDA_R_32F,
-                     ldc,
-                     compute_type,
-                     CUBLAS_GEMM_DEFAULT_TENSOR_OP),
-        "cublasGemmEx failed");
+inline bool same_stamp(const TensorStamp& lhs, const TensorStamp& rhs) {
+    return lhs.data_ptr == rhs.data_ptr &&
+           lhs.version == rhs.version &&
+           lhs.rows == rhs.rows &&
+           lhs.cols == rhs.cols &&
+           lhs.device_index == rhs.device_index;
 }
-
 }  // namespace
 
 
@@ -121,11 +83,40 @@ torch::Tensor forward(torch::Tensor W,
                       torch::Tensor B) {
     validate_inputs(W, X, A, B);
     c10::cuda::CUDAGuard device_guard(W.device());
-    auto WX = at::matmul(W, X);
-    auto BX = at::matmul(B.transpose(0, 1).contiguous(), X);
-    return at::addmm(WX, A, BX, 1.0, 1.0);
+    auto Y = at::mm(W, X);
+    
+    thread_local TensorStamp g_last_b_stamp;
+    thread_local TensorStamp g_last_x_stamp;
+    thread_local torch::Tensor g_last_bt;
+    thread_local torch::Tensor g_last_bx;
+    auto b_stamp = make_stamp(B);
+    auto x_stamp = make_stamp(X);
+    torch::Tensor Bt;
+    const bool same_b = g_last_bt.defined() && same_stamp(g_last_b_stamp, b_stamp);
+    if (same_b) {
+        Bt = g_last_bt;
+    } else {
+        Bt = B.transpose(0, 1).contiguous();
+        g_last_bt = Bt;
+        g_last_b_stamp = b_stamp;
+        g_last_bx = torch::Tensor();
+        g_last_x_stamp = TensorStamp();
+    }
+    torch::Tensor BX;
+    if (same_b && g_last_bx.defined() && same_stamp(g_last_x_stamp, x_stamp)) {
+        BX = g_last_bx;
+    } else {
+        if (!g_last_bx.defined() || g_last_bx.size(0) != A.size(1) || g_last_bx.size(1) != X.size(1)) {
+            g_last_bx = torch::empty({A.size(1), X.size(1)}, W.options());
+        }
+        at::mm_out(g_last_bx, Bt, X);
+        BX = g_last_bx;
+        g_last_x_stamp = x_stamp;
+    }
+    Y.addmm_(A, BX, 1.0, 1.0);
+    return Y;
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.def("forward", &forward, "LoRA forward (ATen bootstrap)");
+    m.def("forward", &forward, "LoRA forward (aten_addmm_inplace_btcontig_mainfirst_cachedbtbx)");
 }

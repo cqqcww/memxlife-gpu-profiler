@@ -44,17 +44,21 @@ class AgentSettings:
     work_dir: Path
     optimized_path: Path
     history_path: Path
+    trace_path: Path
+    trace_summary_path: Path
     summary_path: Path
     report_path: Path
     output_log_path: Path
     output_id_path: Path
     target_spec_path: Path
-    max_minutes: float = 28.0
+    max_minutes: float = 10.0
     rank: int = 16
     benchmark_sizes: list[int] = field(default_factory=lambda: [3584, 4096, 4608])
-    correctness_sizes: list[int] = field(default_factory=lambda: [3584, 4608])
-    warmup: int = 6
-    benchmark_iters: int = 15
+    correctness_sizes: list[int] = field(default_factory=lambda: [3584, 4096, 4608])
+    warmup: int = 3
+    benchmark_iters: int = 7
+    max_candidates: int = 1
+    llm_round_limit: int = 0
     llm: LLMSettings = field(default_factory=LLMSettings)
 
     @classmethod
@@ -70,6 +74,8 @@ class AgentSettings:
             work_dir=work_dir,
             optimized_path=repo_root / "optimized_lora.cu",
             history_path=work_dir / "history.json",
+            trace_path=work_dir / "trace.jsonl",
+            trace_summary_path=work_dir / "trace_summary.md",
             summary_path=work_dir / "summary.json",
             report_path=repo_root / "report2.md",
             output_log_path=repo_root / "output.md",

@@ -14,15 +14,21 @@ echo
 
 python3 - "${TMP_JSON}" "${REPO_ROOT}/output_id2.txt" <<'PY'
 import json
+import re
 import sys
 from pathlib import Path
 
 payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 out_path = Path(sys.argv[2])
-output_file = payload.get("output_file", "")
-if output_file:
-    out_path.write_text(output_file + "\n", encoding="utf-8")
+output_id = payload.get("output_file", "")
+if not output_id:
+    message = payload.get("message", "")
+    match = re.search(r"Mission id:\s*([0-9a-fA-F]+)", message)
+    if match:
+        output_id = match.group(1)
+if output_id:
+    out_path.write_text(output_id + "\n", encoding="utf-8")
     print(f"Saved output id to {out_path}")
 else:
-    print("No output_file found in submit response", file=sys.stderr)
+    print("No output id found in submit response", file=sys.stderr)
 PY
