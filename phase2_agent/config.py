@@ -51,7 +51,7 @@ class AgentSettings:
     output_log_path: Path
     output_id_path: Path
     target_spec_path: Path
-    max_minutes: float = 10.0
+    max_minutes: float = 26.0
     rank: int = 16
     benchmark_sizes: list[int] = field(default_factory=lambda: [3584, 4096, 4608])
     correctness_sizes: list[int] = field(default_factory=lambda: [3584, 4096, 4608])

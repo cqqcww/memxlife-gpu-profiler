@@ -250,18 +250,38 @@ class LocalHarness:
 
     def _read_debug_stats(self, module) -> dict:
         reader = getattr(module, "get_debug_stats", None)
-        if reader is None:
-            return {}
+        raw = None
+        if reader is not None:
+            try:
+                raw = reader()
+            except Exception as exc:
+                self.tracer.log("debug_stats_read_failed", error=str(exc))
+        normalized = self._normalize_debug_stats(raw)
+        if normalized:
+            return normalized
+
+        json_reader = getattr(module, "get_debug_stats_json", None)
+        if json_reader is None:
+            return normalized
         try:
-            raw = reader()
+            raw_json = json_reader()
         except Exception as exc:
-            self.tracer.log("debug_stats_read_failed", error=str(exc))
-            return {}
-        return self._normalize_debug_stats(raw)
+            self.tracer.log("debug_stats_json_read_failed", error=str(exc))
+            return normalized
+        fallback = self._normalize_debug_stats(raw_json)
+        if fallback:
+            self.tracer.log("debug_stats_json_fallback_used", keys=sorted(fallback.keys()))
+        return fallback
 
     def _normalize_debug_stats(self, raw) -> dict:
         if raw is None:
             return {}
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                return {"value": raw}
+            return self._normalize_debug_stats(parsed)
         if isinstance(raw, dict):
             items = raw.items()
         elif hasattr(raw, "items"):

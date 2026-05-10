@@ -238,6 +238,10 @@ py::dict get_debug_stats() {
     return py::dict();
 }
 
+std::string get_debug_stats_json() {
+    return "{}";
+}
+
 void reset_debug_stats() {}
 
 torch::Tensor forward(torch::Tensor W,
@@ -254,6 +258,7 @@ torch::Tensor forward(torch::Tensor W,
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("forward", &forward, "LoRA forward (ATen bootstrap)");
     m.def("get_debug_stats", &get_debug_stats, "LoRA debug stats");
+    m.def("get_debug_stats_json", &get_debug_stats_json, "LoRA debug stats JSON");
     m.def("reset_debug_stats", &reset_debug_stats, "Reset LoRA debug stats");
 }
 """
@@ -385,6 +390,26 @@ py::dict get_debug_stats() {
     stats["materialization_threshold"] = __WEFF_THRESHOLD__;
     stats["dual_repeat_enabled"] = __DUAL_REPEAT__;
     return stats;
+}
+
+std::string get_debug_stats_json() {
+    std::ostringstream stats;
+    stats << "{"
+          << "\"total_calls\":" << g_debug_total_calls
+          << ",\"exact_repeat_hits\":" << g_debug_exact_repeat_hits
+          << ",\"exact_repeat_slot0_hits\":" << g_debug_exact_repeat_slot0_hits
+          << ",\"exact_repeat_slot1_hits\":" << g_debug_exact_repeat_slot1_hits
+          << ",\"slot1_promotions\":" << g_debug_slot1_promotions
+          << ",\"same_weight_probes\":" << g_debug_same_weight_probes
+          << ",\"same_weight_weff_hits\":" << g_debug_same_weight_weff_hits
+          << ",\"weff_materializations\":" << g_debug_weff_materializations
+          << ",\"threshold_fallback_hits\":" << g_debug_threshold_fallback_hits
+          << ",\"fresh_weight_fallback_hits\":" << g_debug_fresh_weight_fallback_hits
+          << ",\"cold_fallback_hits\":" << g_debug_cold_fallback_hits
+          << ",\"materialization_threshold\":" << __WEFF_THRESHOLD__
+          << ",\"dual_repeat_enabled\":" << (__DUAL_REPEAT__ ? "true" : "false")
+          << "}";
+    return stats.str();
 }
 
 void reset_debug_stats() {
@@ -572,6 +597,18 @@ py::dict get_debug_stats() {
     stats["exact_bx_hits"] = g_debug_exact_bx_hits;
     stats["bx_recomputes"] = g_debug_bx_recomputes;
     return stats;
+}
+
+std::string get_debug_stats_json() {
+    std::ostringstream stats;
+    stats << "{"
+          << "\"total_calls\":" << g_debug_total_calls
+          << ",\"same_b_hits\":" << g_debug_same_b_hits
+          << ",\"bt_refreshes\":" << g_debug_bt_refreshes
+          << ",\"exact_bx_hits\":" << g_debug_exact_bx_hits
+          << ",\"bx_recomputes\":" << g_debug_bx_recomputes
+          << "}";
+    return stats.str();
 }
 
 void reset_debug_stats() {
@@ -920,10 +957,13 @@ torch::Tensor forward(torch::Tensor W,
     else:
         raise ValueError(f"Unsupported ATen backend: {candidate.main_backend}")
 
+    extra_debug_export = '\n    m.def("get_debug_stats_json", &get_debug_stats_json, "LoRA debug stats JSON");' if (use_hybrid_weff or use_adaptive_cache) else ""
+
     return body + f"""
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {{
     m.def("forward", &forward, "LoRA forward ({candidate.variant_name or 'ATen variant'})");
     m.def("get_debug_stats", &get_debug_stats, "LoRA debug stats");
+{extra_debug_export}
     m.def("reset_debug_stats", &reset_debug_stats, "Reset LoRA debug stats");
 }}
 """
