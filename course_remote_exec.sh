@@ -30,19 +30,19 @@ run_with_password() {
 set timeout -1
 spawn ssh -o StrictHostKeyChecking=no -p $env(COURSE_REMOTE_SSH_PORT) root@$env(COURSE_REMOTE_SERVER) $env(COURSE_REMOTE_WRAPPER)
 expect {
-  -re "yes/no" {
+  -re {yes/no} {
     send "yes\r"
     exp_continue
   }
-  -re "[Pp]assword:" {
+  -re {[Pp]assword:} {
     send "$env(COURSE_REMOTE_PASSWORD)\r"
     exp_continue
   }
   eof
 }
 catch wait result
-set exit_status [lindex \$result 3]
-exit \$exit_status
+set exit_status [lindex $result 3]
+exit $exit_status
 EOF
 }
 

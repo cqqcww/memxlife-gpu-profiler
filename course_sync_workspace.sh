@@ -25,7 +25,8 @@ sync_with_key() {
 sync_with_password() {
   local tmp_tar
   local remote_tar
-  tmp_tar="$(mktemp /tmp/mlsys-course-sync.XXXXXX.tar.gz)"
+  tmp_tar="$(mktemp /tmp/mlsys-course-sync.XXXXXX)"
+  tmp_tar="${tmp_tar}.tar.gz"
   remote_tar="/tmp/$(basename "${tmp_tar}")"
 
   tar -czf "${tmp_tar}" \
@@ -46,11 +47,11 @@ sync_with_password() {
 set timeout -1
 spawn scp -P $env(COURSE_SYNC_SSH_PORT) -o StrictHostKeyChecking=no $env(COURSE_SYNC_TAR) root@$env(COURSE_SYNC_SERVER):$env(COURSE_SYNC_REMOTE_TAR)
 expect {
-  -re "yes/no" {
+  -re {yes/no} {
     send "yes\r"
     exp_continue
   }
-  -re "[Pp]assword:" {
+  -re {[Pp]assword:} {
     send "$env(COURSE_SYNC_PASSWORD)\r"
     exp_continue
   }
