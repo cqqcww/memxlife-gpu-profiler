@@ -272,6 +272,7 @@ def _aten_variant_body(candidate: CandidateConfig) -> str:
     use_adaptive_cache = candidate.cache_mode == "adaptive"
     use_hybrid_weff = candidate.cache_mode.startswith("hybrid_weff")
     dual_repeat = "dualrepeat" in candidate.cache_mode
+    bt_cache = "btcache" in candidate.cache_mode
     weff_threshold = 2 if "threshold2" in candidate.cache_mode else 1
 
     bt_expr = "B.transpose(0, 1).contiguous()" if bt_contig else "B.transpose(0, 1)"
@@ -361,6 +362,7 @@ def _aten_variant_body(candidate: CandidateConfig) -> str:
 
     if use_hybrid_weff and candidate.main_backend == "addmm_inplace" and main_first:
         dual_repeat_literal = "true" if dual_repeat else "false"
+        bt_cache_literal = "true" if bt_cache else "false"
         debug_helpers = """
 thread_local int64_t g_debug_total_calls = 0;
 thread_local int64_t g_debug_exact_repeat_hits = 0;
@@ -373,6 +375,8 @@ thread_local int64_t g_debug_weff_materializations = 0;
 thread_local int64_t g_debug_threshold_fallback_hits = 0;
 thread_local int64_t g_debug_fresh_weight_fallback_hits = 0;
 thread_local int64_t g_debug_cold_fallback_hits = 0;
+thread_local int64_t g_debug_bt_cache_hits = 0;
+thread_local int64_t g_debug_bt_refreshes = 0;
 
 py::dict get_debug_stats() {
     py::dict stats;
@@ -387,8 +391,11 @@ py::dict get_debug_stats() {
     stats["threshold_fallback_hits"] = g_debug_threshold_fallback_hits;
     stats["fresh_weight_fallback_hits"] = g_debug_fresh_weight_fallback_hits;
     stats["cold_fallback_hits"] = g_debug_cold_fallback_hits;
+    stats["bt_cache_hits"] = g_debug_bt_cache_hits;
+    stats["bt_refreshes"] = g_debug_bt_refreshes;
     stats["materialization_threshold"] = __WEFF_THRESHOLD__;
     stats["dual_repeat_enabled"] = __DUAL_REPEAT__;
+    stats["bt_cache_enabled"] = __BT_CACHE__;
     return stats;
 }
 
@@ -406,8 +413,11 @@ std::string get_debug_stats_json() {
           << ",\"threshold_fallback_hits\":" << g_debug_threshold_fallback_hits
           << ",\"fresh_weight_fallback_hits\":" << g_debug_fresh_weight_fallback_hits
           << ",\"cold_fallback_hits\":" << g_debug_cold_fallback_hits
+          << ",\"bt_cache_hits\":" << g_debug_bt_cache_hits
+          << ",\"bt_refreshes\":" << g_debug_bt_refreshes
           << ",\"materialization_threshold\":" << __WEFF_THRESHOLD__
           << ",\"dual_repeat_enabled\":" << (__DUAL_REPEAT__ ? "true" : "false")
+          << ",\"bt_cache_enabled\":" << (__BT_CACHE__ ? "true" : "false")
           << "}";
     return stats.str();
 }
@@ -424,15 +434,14 @@ void reset_debug_stats() {
     g_debug_threshold_fallback_hits = 0;
     g_debug_fresh_weight_fallback_hits = 0;
     g_debug_cold_fallback_hits = 0;
+    g_debug_bt_cache_hits = 0;
+    g_debug_bt_refreshes = 0;
 }
-""".replace("__WEFF_THRESHOLD__", str(weff_threshold)).replace("__DUAL_REPEAT__", dual_repeat_literal)
-        fallback_bx = (
-            f"auto Bt = {bt_expr};\n"
-            "    auto BX = at::mm(Bt, X);"
+""".replace("__WEFF_THRESHOLD__", str(weff_threshold)).replace("__DUAL_REPEAT__", dual_repeat_literal).replace("__BT_CACHE__", bt_cache_literal)
+        fallback_bx_compute = (
+            "auto BX = at::mm(Bt, X);"
             if not bx_out
-            else f"auto Bt = {bt_expr};\n"
-            "    auto BX = torch::empty({A.size(1), X.size(1)}, W.options());\n"
-            "    at::mm_out(BX, Bt, X);"
+            else "auto BX = torch::empty({A.size(1), X.size(1)}, W.options());\n    at::mm_out(BX, Bt, X);"
         )
         body = f"""
 {debug_helpers}
@@ -457,6 +466,8 @@ torch::Tensor forward(torch::Tensor W,
     thread_local TensorStamp g_last_weight_a_stamp;
     thread_local TensorStamp g_last_weight_b_stamp;
     thread_local torch::Tensor g_last_weff;
+    thread_local TensorStamp g_last_bt_b_stamp;
+    thread_local torch::Tensor g_last_bt;
     thread_local int64_t g_same_weight_varying_x_count = 0;
 
     auto w_stamp = make_stamp(W);
@@ -539,6 +550,20 @@ torch::Tensor forward(torch::Tensor W,
         g_repeat0_output = output;
     }};
 
+    auto fetch_bt = [&]() {{
+        if ({bt_cache_literal} && g_last_bt.defined() && same_stamp(g_last_bt_b_stamp, b_stamp)) {{
+            ++g_debug_bt_cache_hits;
+            return g_last_bt;
+        }}
+        ++g_debug_bt_refreshes;
+        auto fresh_Bt = {bt_expr};
+        if ({bt_cache_literal}) {{
+            g_last_bt = fresh_Bt;
+            g_last_bt_b_stamp = b_stamp;
+        }}
+        return fresh_Bt;
+    }};
+
     const bool same_weight_context =
         same_stamp(g_last_weight_w_stamp, w_stamp) &&
         same_stamp(g_last_weight_a_stamp, a_stamp) &&
@@ -563,7 +588,7 @@ torch::Tensor forward(torch::Tensor W,
         ++g_same_weight_varying_x_count;
         if (g_same_weight_varying_x_count >= {weff_threshold}) {{
             ++g_debug_weff_materializations;
-            auto Bt = {bt_expr};
+            auto Bt = fetch_bt();
             g_last_weff = torch::empty_like(W);
             at::addmm_out(g_last_weff, W, A, Bt, 1.0, 1.0);
             auto Y = at::mm(g_last_weff, X);
@@ -575,7 +600,8 @@ torch::Tensor forward(torch::Tensor W,
 
     ++g_debug_cold_fallback_hits;
     auto Y = at::mm(W, X);
-    {fallback_bx}
+    auto Bt = fetch_bt();
+    {fallback_bx_compute}
     Y.addmm_(A, BX, 1.0, 1.0);
     remember_output(Y);
     return Y;

@@ -202,7 +202,7 @@ class LoRAOptimizationAgent:
                 "- `student_ms` vs `torch_ms` measures the realistic regime where weights stay fixed but `X` changes across calls.",
                 "- `cached_repeat_ms` remains the repeated-input hot-path diagnostic, so we can keep the upside from cache-friendly cases without letting it dominate selection.",
                 "- `debug_stats` now records which execution path was actually used during the varying-`X` and repeated-input benchmark phases.",
-                "- For the hybrid path, the most informative counters are `exact_repeat_hits`, `exact_repeat_slot1_hits`, `same_weight_probes`, `same_weight_weff_hits`, `weff_materializations`, `threshold_fallback_hits`, and `cold_fallback_hits`.",
+                "- For the hybrid path, the most informative counters are `exact_repeat_hits`, `exact_repeat_slot1_hits`, `same_weight_probes`, `same_weight_weff_hits`, `weff_materializations`, `threshold_fallback_hits`, `bt_cache_hits`, `bt_refreshes`, and `cold_fallback_hits`.",
                 "- `.phase2_work/trace.jsonl` is the machine-readable source of truth for one run, and it is reset at the start of each new agent run.",
                 "",
                 "## Candidate History",
