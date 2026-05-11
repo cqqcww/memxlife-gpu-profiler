@@ -95,36 +95,6 @@ def heuristic_candidates() -> list[CandidateConfig]:
             variant_name="aten_addmm_inplace_btcontig_mainfirst_hybridweff_dualrepeat_threshold2",
             notes="Combine dual-slot exact-repeat reuse with a delayed W_eff threshold, so alternating repeats stay fast without forcing W_eff on the very first varying-X miss.",
         ),
-        CandidateConfig(
-            strategy="aten",
-            main_backend="addmm_inplace",
-            low_rank_backend="bt_contiguous_out",
-            accumulation_order="mainfirst",
-            allow_tf32=False,
-            cache_mode="hybrid_weff_dualrepeat_threshold2",
-            variant_name="aten_addmm_inplace_btcontigout_mainfirst_hybridweff_dualrepeat_threshold2",
-            notes="Most aggressive low-risk variant: dual-slot exact-repeat cache, second-hit W_eff materialization, and mm_out cold fallback to squeeze the weakest hidden case over parity.",
-        ),
-        CandidateConfig(
-            strategy="aten",
-            main_backend="addmm_inplace",
-            low_rank_backend="bt_contiguous",
-            accumulation_order="mainfirst",
-            allow_tf32=False,
-            cache_mode="hybrid_weff_dualrepeat",
-            variant_name="aten_addmm_inplace_btcontig_mainfirst_hybridweff_dualrepeat",
-            notes="Two-slot exact-repeat cache control: useful to measure whether ABAB-style reuse helps even without delaying W_eff materialization.",
-        ),
-        CandidateConfig(
-            strategy="aten",
-            main_backend="addmm_inplace",
-            low_rank_backend="bt_contiguous_out",
-            accumulation_order="mainfirst",
-            allow_tf32=False,
-            cache_mode="hybrid_weff",
-            variant_name="aten_addmm_inplace_btcontigout_mainfirst_hybridweff",
-            notes="Existing low-risk hybrid sibling retained as a late control: single-slot exact-repeat, immediate W_eff materialization, and an mm_out cold fallback.",
-        ),
     ]
 
 
