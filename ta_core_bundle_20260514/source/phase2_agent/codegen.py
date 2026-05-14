@@ -402,22 +402,22 @@ py::dict get_debug_stats() {
 std::string get_debug_stats_json() {
     std::ostringstream stats;
     stats << "{"
-          << "\\\"total_calls\\\":" << g_debug_total_calls
-          << ",\\\"exact_repeat_hits\\\":" << g_debug_exact_repeat_hits
-          << ",\\\"exact_repeat_slot0_hits\\\":" << g_debug_exact_repeat_slot0_hits
-          << ",\\\"exact_repeat_slot1_hits\\\":" << g_debug_exact_repeat_slot1_hits
-          << ",\\\"slot1_promotions\\\":" << g_debug_slot1_promotions
-          << ",\\\"same_weight_probes\\\":" << g_debug_same_weight_probes
-          << ",\\\"same_weight_weff_hits\\\":" << g_debug_same_weight_weff_hits
-          << ",\\\"weff_materializations\\\":" << g_debug_weff_materializations
-          << ",\\\"threshold_fallback_hits\\\":" << g_debug_threshold_fallback_hits
-          << ",\\\"fresh_weight_fallback_hits\\\":" << g_debug_fresh_weight_fallback_hits
-          << ",\\\"cold_fallback_hits\\\":" << g_debug_cold_fallback_hits
-          << ",\\\"bt_cache_hits\\\":" << g_debug_bt_cache_hits
-          << ",\\\"bt_refreshes\\\":" << g_debug_bt_refreshes
-          << ",\\\"materialization_threshold\\\":" << __WEFF_THRESHOLD__
-          << ",\\\"dual_repeat_enabled\\\":" << (__DUAL_REPEAT__ ? "true" : "false")
-          << ",\\\"bt_cache_enabled\\\":" << (__BT_CACHE__ ? "true" : "false")
+          << "\"total_calls\":" << g_debug_total_calls
+          << ",\"exact_repeat_hits\":" << g_debug_exact_repeat_hits
+          << ",\"exact_repeat_slot0_hits\":" << g_debug_exact_repeat_slot0_hits
+          << ",\"exact_repeat_slot1_hits\":" << g_debug_exact_repeat_slot1_hits
+          << ",\"slot1_promotions\":" << g_debug_slot1_promotions
+          << ",\"same_weight_probes\":" << g_debug_same_weight_probes
+          << ",\"same_weight_weff_hits\":" << g_debug_same_weight_weff_hits
+          << ",\"weff_materializations\":" << g_debug_weff_materializations
+          << ",\"threshold_fallback_hits\":" << g_debug_threshold_fallback_hits
+          << ",\"fresh_weight_fallback_hits\":" << g_debug_fresh_weight_fallback_hits
+          << ",\"cold_fallback_hits\":" << g_debug_cold_fallback_hits
+          << ",\"bt_cache_hits\":" << g_debug_bt_cache_hits
+          << ",\"bt_refreshes\":" << g_debug_bt_refreshes
+          << ",\"materialization_threshold\":" << __WEFF_THRESHOLD__
+          << ",\"dual_repeat_enabled\":" << (__DUAL_REPEAT__ ? "true" : "false")
+          << ",\"bt_cache_enabled\":" << (__BT_CACHE__ ? "true" : "false")
           << "}";
     return stats.str();
 }
@@ -628,11 +628,11 @@ py::dict get_debug_stats() {
 std::string get_debug_stats_json() {
     std::ostringstream stats;
     stats << "{"
-          << "\\\"total_calls\\\":" << g_debug_total_calls
-          << ",\\\"same_b_hits\\\":" << g_debug_same_b_hits
-          << ",\\\"bt_refreshes\\\":" << g_debug_bt_refreshes
-          << ",\\\"exact_bx_hits\\\":" << g_debug_exact_bx_hits
-          << ",\\\"bx_recomputes\\\":" << g_debug_bx_recomputes
+          << "\"total_calls\":" << g_debug_total_calls
+          << ",\"same_b_hits\":" << g_debug_same_b_hits
+          << ",\"bt_refreshes\":" << g_debug_bt_refreshes
+          << ",\"exact_bx_hits\":" << g_debug_exact_bx_hits
+          << ",\"bx_recomputes\":" << g_debug_bx_recomputes
           << "}";
     return stats.str();
 }
