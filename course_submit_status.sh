@@ -5,11 +5,13 @@ set -euo pipefail
 SERVER="${1:-10.176.37.31}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUTPUT_ID="${2:-$(tr -d '\n' < "${REPO_ROOT}/output_id2.txt")}"
+COURSE_CURL_CONNECT_TIMEOUT="${COURSE_CURL_CONNECT_TIMEOUT:-8}"
+COURSE_CURL_MAX_TIME="${COURSE_CURL_MAX_TIME:-30}"
 
 if [ -z "${OUTPUT_ID}" ]; then
   echo "Missing output id" >&2
   exit 1
 fi
 
-curl "http://${SERVER}:8080/submit_status/${OUTPUT_ID}"
+curl --connect-timeout "${COURSE_CURL_CONNECT_TIMEOUT}" --max-time "${COURSE_CURL_MAX_TIME}" -sS "http://${SERVER}:8080/submit_status/${OUTPUT_ID}"
 echo

@@ -4,10 +4,12 @@ set -euo pipefail
 
 SERVER="${1:-10.176.37.31}"
 USER_ID="${COURSE_USER_ID:-23302010089}"
+COURSE_CURL_CONNECT_TIMEOUT="${COURSE_CURL_CONNECT_TIMEOUT:-8}"
+COURSE_CURL_MAX_TIME="${COURSE_CURL_MAX_TIME:-30}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TMP_JSON="$(mktemp)"
 
-curl -X POST "http://${SERVER}:8080/submit2" \
+curl --connect-timeout "${COURSE_CURL_CONNECT_TIMEOUT}" --max-time "${COURSE_CURL_MAX_TIME}" -sS -X POST "http://${SERVER}:8080/submit2" \
   -H "Content-Type: application/json" \
   -d "{\"id\":\"${USER_ID}\",\"gpu\":1}" | tee "${TMP_JSON}"
 echo

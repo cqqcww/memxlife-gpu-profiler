@@ -8,7 +8,10 @@ REMOTE_DIR="${3:-/workspace}"
 TIMEOUT_SECONDS="${COURSE_START_TIMEOUT_SECONDS:-1800}"
 POLL_SECONDS="${COURSE_START_POLL_SECONDS:-10}"
 USER_ID="${COURSE_USER_ID:-23302010089}"
+COURSE_CURL_CONNECT_TIMEOUT="${COURSE_CURL_CONNECT_TIMEOUT:-8}"
+COURSE_CURL_MAX_TIME="${COURSE_CURL_MAX_TIME:-30}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CURL_OPTS=(--connect-timeout "${COURSE_CURL_CONNECT_TIMEOUT}" --max-time "${COURSE_CURL_MAX_TIME}" -sS)
 
 DEV_MISSION_ID=""
 CLEANUP_DEV=0
@@ -20,7 +23,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-start_payload="$(curl -sS -X POST "http://${SERVER}:8080/start" \
+start_payload="$(curl "${CURL_OPTS[@]}" -X POST "http://${SERVER}:8080/start" \
   -H "Content-Type: application/json" \
   -d "{\"id\":\"${USER_ID}\",\"gpu\":${GPU_MODE}}")"
 
@@ -46,7 +49,7 @@ LAST_STATUS=""
 DEADLINE=$((SECONDS + TIMEOUT_SECONDS))
 
 while [ "${SECONDS}" -lt "${DEADLINE}" ]; do
-  status_payload="$(curl -sS "http://${SERVER}:8080/submit_status/${DEV_MISSION_ID}")"
+  status_payload="$(curl "${CURL_OPTS[@]}" "http://${SERVER}:8080/submit_status/${DEV_MISSION_ID}")"
   parsed_status="$(python3 - "${status_payload}" <<'PY'
 import json
 import re

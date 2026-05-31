@@ -5,8 +5,10 @@ set -euo pipefail
 SERVER="${1:-10.176.37.31}"
 GPU_MODE="${2:-1}"
 USER_ID="${COURSE_USER_ID:-23302010089}"
+COURSE_CURL_CONNECT_TIMEOUT="${COURSE_CURL_CONNECT_TIMEOUT:-8}"
+COURSE_CURL_MAX_TIME="${COURSE_CURL_MAX_TIME:-30}"
 
-curl -X POST "http://${SERVER}:8080/start" \
+curl --connect-timeout "${COURSE_CURL_CONNECT_TIMEOUT}" --max-time "${COURSE_CURL_MAX_TIME}" -sS -X POST "http://${SERVER}:8080/start" \
   -H "Content-Type: application/json" \
   -d "{\"id\":\"${USER_ID}\",\"gpu\":${GPU_MODE}}"
 echo
