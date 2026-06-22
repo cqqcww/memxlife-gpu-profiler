@@ -1,0 +1,405 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib/common.sh"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ./selfcmd doctor
+  ./selfcmd start
+  ./selfcmd dev-status
+  ./selfcmd deploy
+  ./selfcmd deploy-clean
+  ./selfcmd install-deps
+  ./selfcmd test
+  ./selfcmd bootstrap
+  ./selfcmd exec '<remote command>'
+  ./selfcmd run '<remote command>' [label]
+  ./selfcmd smoke
+  ./selfcmd profile-smoke
+  ./selfcmd train [config_path]
+  ./selfcmd matrix-dry [matrix_path]
+  ./selfcmd matrix-run [matrix_path]
+  ./selfcmd auto-probe [probe_path]
+  ./selfcmd stability-run [recommendation_json] [steps]
+  ./selfcmd deepseek-probe
+  ./selfcmd deepseek-adafactor-probe
+  ./selfcmd deepseek-scale-probe
+  ./selfcmd deepseek-budget-probe
+  ./selfcmd deepseek-256-probe
+  ./selfcmd deepseek-auto-probe
+  ./selfcmd deepseek-stability-run [steps]
+  ./selfcmd deepseek-realdata-probe
+  ./selfcmd deepseek-realdata-stability-run [steps]
+  ./selfcmd recommendation-report
+  ./selfcmd evidence
+  ./selfcmd fetch
+  ./selfcmd submit
+  ./selfcmd status [official_output_id]
+  ./selfcmd finish
+  ./selfcmd cycle [config_path]
+
+Typical loop:
+  ./selfcmd start
+  ./selfcmd deploy-clean
+  ./selfcmd smoke
+  ./selfcmd fetch
+
+Local code is authoritative. Remote /workspace is the GPU execution area.
+Heavy remote runs, caches, and checkpoints are intentionally not fetched.
+EOF
+}
+
+parse_mission_id() {
+  python3 - "$1" <<'PY'
+import json
+import re
+import sys
+
+payload = json.loads(sys.argv[1])
+message = payload.get("message", "")
+for key in ("output_file", "mission_id", "id"):
+    if payload.get(key):
+        print(payload[key])
+        raise SystemExit
+match = re.search(r"Mission id:\s*([0-9a-fA-F]+)", message)
+if not match:
+    match = re.search(r"mission\s+([0-9a-fA-F]+)", message, re.IGNORECASE)
+if not match:
+    raise SystemExit("Could not parse mission id from payload:\n" + json.dumps(payload, indent=2))
+print(match.group(1))
+PY
+}
+
+parse_status_and_port() {
+  python3 - "$1" <<'PY'
+import json
+import re
+import sys
+
+payload = json.loads(sys.argv[1])
+message = payload.get("message", "")
+status = payload.get("status", "") or ""
+ssh_port = ""
+for raw_line in message.splitlines():
+    line = raw_line.strip()
+    if line.startswith("status:"):
+        status = line.split(":", 1)[1].strip()
+    elif line.startswith("ssh_port:"):
+        ssh_port = line.split(":", 1)[1].strip()
+    else:
+        match = re.search(r"ssh_port[:=]\s*(\d+)", line)
+        if match:
+            ssh_port = match.group(1)
+if not ssh_port:
+    match = re.search(r"ssh_port[:=]\s*(\d+)", message)
+    if match:
+        ssh_port = match.group(1)
+print(status)
+print(ssh_port)
+PY
+}
+
+cmd_doctor() {
+  need_cmd curl
+  need_cmd python3
+  need_cmd ssh
+  need_cmd scp
+  need_cmd tar
+  need_cmd base64
+  log "project_root=${PROJECT_ROOT}"
+  log "remote=${COURSE_SERVER}:${REMOTE_DIR}"
+  log "submit_path=${COURSE_SUBMIT_PATH}"
+  if command -v expect >/dev/null 2>&1; then
+    log "expect fallback available"
+  else
+    log "expect fallback not found; key auth must work"
+  fi
+  if [ -f "${SSH_PORT_FILE}" ] || [ -n "${COURSE_SSH_PORT:-}" ]; then
+    remote_exec "cd '${REMOTE_DIR}' 2>/dev/null || true; python3 -V; command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true"
+  fi
+}
+
+cmd_start() {
+  local payload
+  payload="$(curl_course -X POST "http://${COURSE_SERVER}:8080/start" \
+    -H "Content-Type: application/json" \
+    -d "{\"id\":\"${COURSE_USER_ID}\",\"gpu\":${COURSE_GPU}}")"
+  local mission_id
+  mission_id="$(parse_mission_id "${payload}")"
+  printf '%s\n' "${mission_id}" > "${DEV_MISSION_FILE}"
+  log "queued_dev_mission=${mission_id}"
+
+  local deadline=$((SECONDS + COURSE_START_TIMEOUT_SECONDS))
+  local last_status=""
+  while [ "${SECONDS}" -lt "${deadline}" ]; do
+    local status_payload
+    status_payload="$(curl_course "http://${COURSE_SERVER}:8080/submit_status/${mission_id}")"
+    local parsed
+    parsed="$(parse_status_and_port "${status_payload}")"
+    local status
+    local ssh_port
+    status="$(printf '%s\n' "${parsed}" | sed -n '1p')"
+    ssh_port="$(printf '%s\n' "${parsed}" | sed -n '2p')"
+    if [ "${status}" != "${last_status}" ]; then
+      log "dev_status=${status:-unknown}"
+      last_status="${status}"
+    fi
+    if [ "${status}" = "running" ] && [ -n "${ssh_port}" ]; then
+      printf '%s\n' "${ssh_port}" > "${SSH_PORT_FILE}"
+      log "ssh_port=${ssh_port}"
+      return 0
+    fi
+    if [ "${status}" = "failed" ] || [ "${status}" = "killed" ] || [ "${status}" = "completed" ]; then
+      die "Dev mission ended before exposing ssh_port."
+    fi
+    sleep "${COURSE_START_POLL_SECONDS}"
+  done
+  die "Timed out waiting for dev mission ssh_port."
+}
+
+cmd_dev_status() {
+  local mission_id="${1:-}"
+  if [ -z "${mission_id}" ] && [ -f "${DEV_MISSION_FILE}" ]; then
+    mission_id="$(tr -d '\n' < "${DEV_MISSION_FILE}")"
+  fi
+  [ -n "${mission_id}" ] || die "Missing dev mission id."
+  curl_course "http://${COURSE_SERVER}:8080/submit_status/${mission_id}"
+  echo
+}
+
+cmd_deploy() {
+  sync_source_overlay
+}
+
+cmd_deploy_clean() {
+  clean_remote_source
+  sync_source_overlay
+  remote_exec "cd '${REMOTE_DIR}' && find . -maxdepth 2 -type f | sort | sed -n '1,120p'"
+}
+
+cmd_install_deps() {
+  run_logged_remote "install-deps-$(date -u +%Y%m%dT%H%M%SZ)" \
+    "if [ -f requirements.txt ]; then python3 -m pip install --quiet -r requirements.txt; else python3 -m pip install --quiet 'transformers==4.41.2' 'datasets' 'numpy==1.24.4' 'fsspec[http]<=2026.4.0,>=2023.1.0'; fi"
+}
+
+cmd_test() {
+  run_logged_remote "tests-$(date -u +%Y%m%dT%H%M%SZ)" \
+    "python3 -m py_compile train.py training_framework/*.py agent/*.py tests/*.py && python3 -m pytest tests"
+}
+
+cmd_bootstrap() {
+  cmd_deploy_clean
+  cmd_install_deps
+  cmd_test
+}
+
+cmd_exec() {
+  [ "$#" -ge 1 ] || die "Usage: ./selfcmd exec '<remote command>'"
+  remote_exec "$*"
+}
+
+cmd_run() {
+  [ "$#" -ge 1 ] || die "Usage: ./selfcmd run '<remote command>' [label]"
+  local cmd="$1"
+  local label="${2:-remote-run-$(date -u +%Y%m%dT%H%M%SZ)}"
+  run_logged_remote "${label}" "${cmd}"
+}
+
+cmd_smoke() {
+  run_logged_remote "smoke-$(date -u +%Y%m%dT%H%M%SZ)" \
+    "python3 -m py_compile train.py training_framework/*.py agent/*.py && python3 train.py --config configs/debug.yaml"
+}
+
+cmd_profile_smoke() {
+  run_logged_remote "profile-smoke-$(date -u +%Y%m%dT%H%M%SZ)" \
+    "python3 -m py_compile train.py training_framework/*.py agent/*.py && python3 train.py --base configs/base/causal_lm_debug.yaml --model-profile configs/model_profiles/tiny_gpt2.yaml --data-profile configs/data_profiles/local_fixture.yaml --override trainer.max_steps=4 --override trainer.run_name=profile-smoke"
+}
+
+cmd_train() {
+  local config="${1:-configs/debug.yaml}"
+  local base
+  base="$(basename "${config}" .yaml)"
+  run_logged_remote "train-${base}-$(date -u +%Y%m%dT%H%M%SZ)" \
+    "python3 train.py --config '${config}'"
+}
+
+cmd_matrix_dry() {
+  local matrix="${1:-configs/matrices/cache_on_off.yaml}"
+  local base
+  base="$(basename "${matrix}" .yaml)"
+  run_logged_remote "matrix-dry-${base}-$(date -u +%Y%m%dT%H%M%SZ)" \
+    "python3 -m agent.matrix_runner --matrix '${matrix}' --dry-run"
+}
+
+cmd_matrix_run() {
+  local matrix="${1:-configs/matrices/cache_on_off.yaml}"
+  local base
+  base="$(basename "${matrix}" .yaml)"
+  run_logged_remote "matrix-run-${base}-$(date -u +%Y%m%dT%H%M%SZ)" \
+    "python3 -m agent.matrix_runner --matrix '${matrix}'"
+}
+
+cmd_auto_probe() {
+  local probe="${1:-configs/auto_probes/deepseek_adafactor_token_budget.yaml}"
+  local base
+  base="$(basename "${probe}" .yaml)"
+  run_logged_remote "auto-probe-${base}-$(date -u +%Y%m%dT%H%M%SZ)" \
+    "python3 -m agent.auto_probe --probe '${probe}'"
+}
+
+cmd_stability_run() {
+  local recommendation="${1:-runs/recommendations/deepseek_adafactor_2048_followup-latest.json}"
+  local steps="${2:-50}"
+  local base
+  base="$(basename "${recommendation}" .json)"
+  run_logged_remote "stability-${base}-${steps}step-$(date -u +%Y%m%dT%H%M%SZ)" \
+    "python3 -m agent.stability_runner --recommendation '${recommendation}' --steps '${steps}'"
+}
+
+cmd_deepseek_probe() {
+  cmd_matrix_run "configs/matrices/deepseek_safety_probe.yaml"
+}
+
+cmd_deepseek_adafactor_probe() {
+  cmd_matrix_run "configs/matrices/deepseek_adafactor_probe.yaml"
+}
+
+cmd_deepseek_scale_probe() {
+  cmd_matrix_run "configs/matrices/deepseek_adafactor_scale_probe.yaml"
+}
+
+cmd_deepseek_budget_probe() {
+  cmd_matrix_run "configs/matrices/deepseek_adafactor_budget_probe.yaml"
+}
+
+cmd_deepseek_256_probe() {
+  cmd_matrix_run "configs/matrices/deepseek_adafactor_256_probe.yaml"
+}
+
+cmd_deepseek_auto_probe() {
+  cmd_auto_probe "configs/auto_probes/deepseek_adafactor_token_budget.yaml"
+}
+
+cmd_deepseek_stability_run() {
+  local steps="${1:-50}"
+  cmd_stability_run "runs/recommendations/deepseek_adafactor_2048_followup-latest.json" "${steps}"
+}
+
+cmd_deepseek_realdata_probe() {
+  cmd_auto_probe "configs/auto_probes/deepseek_adafactor_wikitext_realdata.yaml"
+}
+
+cmd_deepseek_realdata_stability_run() {
+  local steps="${1:-50}"
+  cmd_stability_run "runs/recommendations/deepseek_adafactor_wikitext_realdata-latest.json" "${steps}"
+}
+
+cmd_recommendation_report() {
+  run_logged_remote "recommendation-report-$(date -u +%Y%m%dT%H%M%SZ)" \
+    "python3 -m agent.recommendation_report"
+}
+
+cmd_evidence() {
+  run_logged_remote "evidence-$(date -u +%Y%m%dT%H%M%SZ)" \
+    "python3 scripts/export_events_table.py --runs-dir runs --output-md runs/evidence_table.md --output-csv runs/evidence_table.csv"
+}
+
+cmd_fetch() {
+  local stamp
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  local remote_tar="/tmp/phase4-artifacts-${stamp}.tar.gz"
+  local local_tar="${ARTIFACT_DIR}/phase4-artifacts-${stamp}.tar.gz"
+  local out_dir="${ARTIFACT_DIR}/remote-${stamp}"
+  mkdir -p "${out_dir}"
+  pack_remote_artifacts "${remote_tar}"
+  copy_from_remote "${remote_tar}" "${local_tar}"
+  tar -xzf "${local_tar}" -C "${out_dir}"
+  remote_exec "rm -f '${remote_tar}'"
+  log "Fetched lightweight artifacts to ${out_dir}"
+}
+
+cmd_submit() {
+  remote_exec "test -f '${REMOTE_DIR}/report4.md' && ls -lh '${REMOTE_DIR}/report4.md'"
+  local payload
+  payload="$(curl_course -X POST "http://${COURSE_SERVER}:8080${COURSE_SUBMIT_PATH}" \
+    -H "Content-Type: application/json" \
+    -d "{\"id\":\"${COURSE_USER_ID}\",\"gpu\":${COURSE_GPU}}")"
+  echo "${payload}"
+  local output_id
+  output_id="$(parse_mission_id "${payload}")"
+  printf '%s\n' "${output_id}" > "${OFFICIAL_ID_FILE}"
+  log "official_output_id=${output_id}"
+}
+
+cmd_status() {
+  local output_id="${1:-}"
+  if [ -z "${output_id}" ] && [ -f "${OFFICIAL_ID_FILE}" ]; then
+    output_id="$(tr -d '\n' < "${OFFICIAL_ID_FILE}")"
+  fi
+  [ -n "${output_id}" ] || die "Missing official output id."
+  curl_course "http://${COURSE_SERVER}:8080/submit_status/${output_id}"
+  echo
+}
+
+cmd_finish() {
+  curl_course -X POST "http://${COURSE_SERVER}:8080/finish" \
+    -H "Content-Type: application/json" \
+    -d "{\"id\":\"${COURSE_USER_ID}\"}"
+  echo
+}
+
+cmd_cycle() {
+  local config="${1:-configs/debug.yaml}"
+  cmd_deploy_clean
+  cmd_train "${config}"
+  cmd_fetch
+}
+
+main() {
+  local cmd="${1:-help}"
+  shift || true
+  case "${cmd}" in
+    help|-h|--help) usage ;;
+    doctor) cmd_doctor "$@" ;;
+    start) cmd_start "$@" ;;
+    dev-status) cmd_dev_status "$@" ;;
+    deploy) cmd_deploy "$@" ;;
+    deploy-clean) cmd_deploy_clean "$@" ;;
+    install-deps) cmd_install_deps "$@" ;;
+    test) cmd_test "$@" ;;
+    bootstrap) cmd_bootstrap "$@" ;;
+    exec) cmd_exec "$@" ;;
+    run) cmd_run "$@" ;;
+    smoke) cmd_smoke "$@" ;;
+    profile-smoke) cmd_profile_smoke "$@" ;;
+    train) cmd_train "$@" ;;
+    matrix-dry) cmd_matrix_dry "$@" ;;
+    matrix-run) cmd_matrix_run "$@" ;;
+    auto-probe) cmd_auto_probe "$@" ;;
+    stability-run) cmd_stability_run "$@" ;;
+    deepseek-probe) cmd_deepseek_probe "$@" ;;
+    deepseek-adafactor-probe) cmd_deepseek_adafactor_probe "$@" ;;
+    deepseek-scale-probe) cmd_deepseek_scale_probe "$@" ;;
+    deepseek-budget-probe) cmd_deepseek_budget_probe "$@" ;;
+    deepseek-256-probe) cmd_deepseek_256_probe "$@" ;;
+    deepseek-auto-probe) cmd_deepseek_auto_probe "$@" ;;
+    deepseek-stability-run) cmd_deepseek_stability_run "$@" ;;
+    deepseek-realdata-probe) cmd_deepseek_realdata_probe "$@" ;;
+    deepseek-realdata-stability-run) cmd_deepseek_realdata_stability_run "$@" ;;
+    recommendation-report) cmd_recommendation_report "$@" ;;
+    evidence) cmd_evidence "$@" ;;
+    fetch) cmd_fetch "$@" ;;
+    submit) cmd_submit "$@" ;;
+    status) cmd_status "$@" ;;
+    finish) cmd_finish "$@" ;;
+    cycle) cmd_cycle "$@" ;;
+    *) usage; die "Unknown command: ${cmd}" ;;
+  esac
+}
+
+main "$@"

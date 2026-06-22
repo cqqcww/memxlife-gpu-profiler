@@ -1,0 +1,16 @@
+profile:
+  name: wikitext2
+  expected_token_count_note: Standard small language-modeling sanity dataset.
+
+data:
+  dataset_name: wikitext
+  dataset_config: wikitext-2-raw-v1
+  dataset_split: train
+  text_field: text
+  local_text_path:
+  max_samples: 2000
+  validation_split: 0.05
+  use_cache: true
+  num_workers: 0
+  pin_memory: true
+  persistent_workers: false

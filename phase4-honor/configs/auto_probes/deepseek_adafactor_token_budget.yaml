@@ -1,0 +1,28 @@
+name: deepseek_adafactor_token_budget
+description: Bounded DeepSeek Adafactor token-budget probe that expands until failure or a recommendation gate.
+base_config: configs/base/causal_lm_debug.yaml
+model_profile: configs/model_profiles/deepseek_placeholder.yaml
+data_profile: configs/data_profiles/local_fixture.yaml
+token_budgets:
+  - 64
+  - 128
+  - 256
+  - 512
+batch_size: 1
+grad_accum_steps: 1
+max_steps: 3
+log_every_steps: 1
+validate_every_steps: 3
+memory_limit_mb: 24576
+headroom_ratio_for_expand: 0.75
+min_speedup_ratio: 1.03
+stop_on_failure: true
+run_name_prefix: deepseek-auto-adafactor
+base_overrides:
+  data.local_text_path: fixtures/medium_corpus.txt
+  data.validation_split: 0.2
+  checkpoint.enabled: false
+  model.gradient_checkpointing: false
+  trainer.mixed_precision: auto
+  optimizer.name: adafactor
+  optimizer.lr: 0.0001

@@ -1,0 +1,54 @@
+name: deepseek_adafactor_256_probe
+description: Compare three 256-token DeepSeek Adafactor shapes on the medium local corpus.
+base_config: configs/base/causal_lm_debug.yaml
+model_profile: configs/model_profiles/deepseek_placeholder.yaml
+data_profile: configs/data_profiles/local_fixture.yaml
+variants:
+  - name: s256_b1_gc_off_3step_val
+    overrides:
+      trainer.run_name: deepseek-adafactor-s256-b1-gc-off-3step-val
+      trainer.seq_len: 256
+      trainer.batch_size: 1
+      trainer.grad_accum_steps: 1
+      trainer.max_steps: 3
+      trainer.log_every_steps: 1
+      trainer.validate_every_steps: 3
+      data.local_text_path: fixtures/medium_corpus.txt
+      data.validation_split: 0.2
+      checkpoint.enabled: false
+      model.gradient_checkpointing: false
+      trainer.mixed_precision: auto
+      optimizer.name: adafactor
+      optimizer.lr: 0.0001
+  - name: s128_b2_gc_off_3step_val
+    overrides:
+      trainer.run_name: deepseek-adafactor-s128-b2-gc-off-3step-val
+      trainer.seq_len: 128
+      trainer.batch_size: 2
+      trainer.grad_accum_steps: 1
+      trainer.max_steps: 3
+      trainer.log_every_steps: 1
+      trainer.validate_every_steps: 3
+      data.local_text_path: fixtures/medium_corpus.txt
+      data.validation_split: 0.2
+      checkpoint.enabled: false
+      model.gradient_checkpointing: false
+      trainer.mixed_precision: auto
+      optimizer.name: adafactor
+      optimizer.lr: 0.0001
+  - name: s64_b4_gc_off_3step_val
+    overrides:
+      trainer.run_name: deepseek-adafactor-s64-b4-gc-off-3step-val
+      trainer.seq_len: 64
+      trainer.batch_size: 4
+      trainer.grad_accum_steps: 1
+      trainer.max_steps: 3
+      trainer.log_every_steps: 1
+      trainer.validate_every_steps: 3
+      data.local_text_path: fixtures/medium_corpus.txt
+      data.validation_split: 0.2
+      checkpoint.enabled: false
+      model.gradient_checkpointing: false
+      trainer.mixed_precision: auto
+      optimizer.name: adafactor
+      optimizer.lr: 0.0001

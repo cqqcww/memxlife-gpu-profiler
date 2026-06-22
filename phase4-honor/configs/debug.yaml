@@ -1,0 +1,60 @@
+model:
+  name_or_path: sshleifer/tiny-gpt2
+  tokenizer_name:
+  from_pretrained: false
+  trust_remote_code: false
+  gradient_checkpointing: false
+
+data:
+  local_text_path: fixtures/tiny_corpus.txt
+  dataset_name:
+  cache_dir: data_cache
+  use_cache: true
+  validation_split: 0.2
+  max_samples: 32
+  seed: 1337
+  num_workers: 0
+  pin_memory: false
+  persistent_workers: false
+
+optimizer:
+  name: adamw
+  lr: 0.0005
+  weight_decay: 0.01
+  betas: 0.9,0.95
+  eps: 0.00000001
+
+scheduler:
+  name: warmup_cosine
+  warmup_steps: 2
+  min_lr_ratio: 0.1
+
+trainer:
+  run_name: debug
+  output_dir: runs
+  seq_len: 64
+  batch_size: 2
+  max_steps: 6
+  grad_accum_steps: 1
+  grad_clip_norm: 1.0
+  log_every_steps: 1
+  validate_every_steps: 3
+  mixed_precision: off
+  device: auto
+  compile_model: false
+  resume_from:
+
+logging:
+  tensorboard: true
+  jsonl: true
+  console: true
+
+checkpoint:
+  save_every_steps: 3
+  keep_last: 2
+  save_rng: true
+
+agent:
+  enabled: true
+  proposal_mode: true
+  ledger_path: runs/ledger.jsonl

@@ -1,0 +1,50 @@
+name: qwen_throughput_probe
+description: Probe Qwen throughput bottlenecks by separating gradient checkpointing, batch size, and sequence length.
+base_config: configs/base/causal_lm_tinystories.yaml
+model_profile: configs/model_profiles/qwen_small_placeholder.yaml
+data_profile: configs/data_profiles/tinystories.yaml
+variants:
+  - name: s64_b1_gc_on
+    overrides:
+      trainer.run_name: qwen-probe-s64-b1-gc-on
+      trainer.seq_len: 64
+      trainer.batch_size: 1
+      trainer.grad_accum_steps: 1
+      trainer.max_steps: 20
+      trainer.validate_every_steps: 20
+      checkpoint.save_every_steps: 20
+      data.max_samples: 1000
+      model.gradient_checkpointing: true
+  - name: s64_b1_gc_off
+    overrides:
+      trainer.run_name: qwen-probe-s64-b1-gc-off
+      trainer.seq_len: 64
+      trainer.batch_size: 1
+      trainer.grad_accum_steps: 1
+      trainer.max_steps: 20
+      trainer.validate_every_steps: 20
+      checkpoint.save_every_steps: 20
+      data.max_samples: 1000
+      model.gradient_checkpointing: false
+  - name: s64_b2_gc_off
+    overrides:
+      trainer.run_name: qwen-probe-s64-b2-gc-off
+      trainer.seq_len: 64
+      trainer.batch_size: 2
+      trainer.grad_accum_steps: 1
+      trainer.max_steps: 20
+      trainer.validate_every_steps: 20
+      checkpoint.save_every_steps: 20
+      data.max_samples: 1000
+      model.gradient_checkpointing: false
+  - name: s128_b1_gc_off
+    overrides:
+      trainer.run_name: qwen-probe-s128-b1-gc-off
+      trainer.seq_len: 128
+      trainer.batch_size: 1
+      trainer.grad_accum_steps: 1
+      trainer.max_steps: 20
+      trainer.validate_every_steps: 20
+      checkpoint.save_every_steps: 20
+      data.max_samples: 1000
+      model.gradient_checkpointing: false

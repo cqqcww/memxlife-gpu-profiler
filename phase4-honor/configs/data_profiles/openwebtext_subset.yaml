@@ -1,0 +1,16 @@
+profile:
+  name: openwebtext_subset
+  expected_token_count_note: Optional larger web-text profile; use only if download/time permit.
+
+data:
+  dataset_name: Skylion007/openwebtext
+  dataset_config:
+  dataset_split: train
+  text_field: text
+  local_text_path:
+  max_samples: 2000
+  validation_split: 0.05
+  use_cache: true
+  num_workers: 0
+  pin_memory: true
+  persistent_workers: false

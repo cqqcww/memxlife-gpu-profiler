@@ -1,0 +1,7 @@
+config.env
+state/*
+logs/*
+artifacts/*
+!state/.gitkeep
+!logs/.gitkeep
+!artifacts/.gitkeep

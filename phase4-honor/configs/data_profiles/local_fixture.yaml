@@ -1,0 +1,16 @@
+profile:
+  name: local_fixture
+  expected_token_count_note: Tiny local file for smoke tests.
+
+data:
+  local_text_path: fixtures/tiny_corpus.txt
+  dataset_name:
+  dataset_config:
+  dataset_split: train
+  text_field: text
+  max_samples: 32
+  validation_split: 0.2
+  use_cache: true
+  num_workers: 0
+  pin_memory: false
+  persistent_workers: false

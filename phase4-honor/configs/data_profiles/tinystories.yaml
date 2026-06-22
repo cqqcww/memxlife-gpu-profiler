@@ -1,0 +1,16 @@
+profile:
+  name: tinystories
+  expected_token_count_note: Small TinyStories subset for fast, coherent causal-LM experiments.
+
+data:
+  dataset_name: roneneldan/TinyStories
+  dataset_config:
+  dataset_split: train
+  text_field: text
+  local_text_path:
+  max_samples: 2000
+  validation_split: 0.05
+  use_cache: true
+  num_workers: 0
+  pin_memory: true
+  persistent_workers: false

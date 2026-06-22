@@ -1,0 +1,47 @@
+The training framework keeps a careful notebook of every run. It records the
+configuration, the timing, the memory footprint, and the final summary so that a
+future experiment can explain where it came from.
+
+Small experiments are useful when they are honest. A tiny corpus cannot prove
+model quality, but it can prove that the data path, optimizer path, validation
+path, and logging path all work together.
+
+The agent does not need to be mysterious to be helpful. It can read logs, compare
+variants, keep the command loop repeatable, and make the next decision easier to
+trust.
+
+Gradient checkpointing trades compute for memory. That trade is useful near the
+edge of the GPU, but it should not be enabled blindly when the memory logs show
+that a faster direct path still fits.
+
+Adafactor changes the memory story for larger language models. It does not make
+training free, and it does not replace careful validation, but it can avoid the
+large optimizer states that make AdamW fail on a limited GPU.
+
+The profiler should not only ask whether a run succeeded. It should ask why it
+succeeded, how much memory it used, how much time each step took, and whether the
+result is strong enough to justify a larger follow-up.
+
+Each benchmark is a negotiation with the machine. Longer sequences may improve
+tokens per step, larger batches may improve utilization, and both can change the
+shape of memory pressure in ways that only measurement can settle.
+
+A reliable training scaffold is less glamorous than a clever one-off trick, but
+it is easier to debug. When something breaks, the path from configuration to
+dataset to model to optimizer is visible.
+
+The report should preserve failed attempts as evidence. An out-of-memory error
+inside an optimizer step is not just a failure; it is a clue about parameter
+state, temporary buffers, and the next low-memory strategy to try.
+
+The final experiment should be understandable after the terminal scrollback is
+gone. That is why the framework saves resolved configs, JSONL events, markdown
+summaries, matrix tables, and a lightweight artifact bundle.
+
+When a larger model finally trains for a few steps, the right response is not to
+declare victory. The right response is to ask what changed, what remains risky,
+and which next probe can test the boundary without destroying iteration speed.
+
+Good harness engineering feels like clearing a path through the fog. The model
+is still difficult, but the sequence of actions becomes concrete: sync, test,
+run a matrix, fetch evidence, compare, and update the plan.

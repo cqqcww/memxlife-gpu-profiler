@@ -1,0 +1,19 @@
+profile:
+  name: gpt2
+  family: gpt-style-causal-lm
+  expected_memory: medium
+  caveats:
+    - Larger than distilgpt2; use smaller batch size or gradient accumulation if memory is tight.
+
+model:
+  name_or_path: gpt2
+  tokenizer_name:
+  from_pretrained: false
+  trust_remote_code: false
+  gradient_checkpointing: false
+
+trainer_recommendations:
+  seq_len: 256
+  batch_size: 2
+  grad_accum_steps: 1
+  mixed_precision: auto

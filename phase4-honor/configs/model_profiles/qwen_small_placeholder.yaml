@@ -1,0 +1,22 @@
+profile:
+  name: qwen_small_placeholder
+  family: qwen-causal-lm
+  expected_memory: unknown
+  caveats:
+    - Stretch profile. Requires download, tokenizer compatibility, and memory preflight.
+    - Try only after GPT-style profile switching is validated.
+    - Remote Qwen probe found gradient checkpointing slower and numerically unstable for the short random-init run.
+    - If OOM occurs, reduce seq_len or batch_size before re-enabling gradient checkpointing.
+
+model:
+  name_or_path: Qwen/Qwen2.5-0.5B
+  tokenizer_name:
+  from_pretrained: false
+  trust_remote_code: true
+  gradient_checkpointing: false
+
+trainer_recommendations:
+  seq_len: 128
+  batch_size: 1
+  grad_accum_steps: 1
+  mixed_precision: auto

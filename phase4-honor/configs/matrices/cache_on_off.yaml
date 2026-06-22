@@ -1,0 +1,14 @@
+name: cache_on_off
+description: Compare cold/nonpersistent tokenization path against cached token blocks.
+base_config: configs/baseline_tinystories.yaml
+variants:
+  - name: cache_off
+    overrides:
+      trainer.run_name: sweep-cache-off
+      data.use_cache: false
+      trainer.max_steps: 60
+  - name: cache_on
+    overrides:
+      trainer.run_name: sweep-cache-on
+      data.use_cache: true
+      trainer.max_steps: 60

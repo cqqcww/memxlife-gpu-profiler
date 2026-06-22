@@ -1,0 +1,19 @@
+profile:
+  name: tiny_gpt2
+  family: gpt-style-causal-lm
+  expected_memory: tiny
+  caveats:
+    - Best for smoke tests only; not meaningful for model quality.
+
+model:
+  name_or_path: sshleifer/tiny-gpt2
+  tokenizer_name:
+  from_pretrained: false
+  trust_remote_code: false
+  gradient_checkpointing: false
+
+trainer_recommendations:
+  seq_len: 64
+  batch_size: 2
+  grad_accum_steps: 1
+  mixed_precision: off

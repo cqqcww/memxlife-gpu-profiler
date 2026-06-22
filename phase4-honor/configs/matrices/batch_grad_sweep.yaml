@@ -1,0 +1,28 @@
+name: batch_grad_sweep
+description: Probe whether larger effective batches amortize per-step overhead.
+base_config: configs/cached_tinystories.yaml
+variants:
+  - name: bs2_ga1
+    overrides:
+      trainer.run_name: sweep-bs2-ga1
+      trainer.batch_size: 2
+      trainer.grad_accum_steps: 1
+      trainer.max_steps: 60
+  - name: bs4_ga1
+    overrides:
+      trainer.run_name: sweep-bs4-ga1
+      trainer.batch_size: 4
+      trainer.grad_accum_steps: 1
+      trainer.max_steps: 60
+  - name: bs8_ga1
+    overrides:
+      trainer.run_name: sweep-bs8-ga1
+      trainer.batch_size: 8
+      trainer.grad_accum_steps: 1
+      trainer.max_steps: 60
+  - name: bs4_ga2
+    overrides:
+      trainer.run_name: sweep-bs4-ga2
+      trainer.batch_size: 4
+      trainer.grad_accum_steps: 2
+      trainer.max_steps: 60

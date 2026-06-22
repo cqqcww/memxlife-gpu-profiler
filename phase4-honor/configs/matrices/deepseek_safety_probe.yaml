@@ -1,0 +1,42 @@
+name: deepseek_safety_probe
+description: Stage DeepSeek through preflight, AdamW OOM reproduction, and a low-memory Adafactor smoke step.
+base_config: configs/base/causal_lm_debug.yaml
+model_profile: configs/model_profiles/deepseek_placeholder.yaml
+data_profile: configs/data_profiles/local_fixture.yaml
+variants:
+  - name: preflight_s16_b1
+    preflight_only: true
+    overrides:
+      trainer.run_name: deepseek-matrix-preflight-s16-b1
+      trainer.seq_len: 16
+      trainer.batch_size: 1
+      trainer.grad_accum_steps: 1
+      trainer.max_steps: 1
+      trainer.validate_every_steps: 1
+      checkpoint.save_every_steps: 1
+      model.gradient_checkpointing: true
+      trainer.mixed_precision: auto
+  - name: adamw_s16_b1
+    overrides:
+      trainer.run_name: deepseek-matrix-adamw-s16-b1
+      trainer.seq_len: 16
+      trainer.batch_size: 1
+      trainer.grad_accum_steps: 1
+      trainer.max_steps: 1
+      trainer.validate_every_steps: 1
+      checkpoint.save_every_steps: 1
+      model.gradient_checkpointing: true
+      trainer.mixed_precision: auto
+  - name: adafactor_s16_b1_no_ckpt
+    overrides:
+      trainer.run_name: deepseek-matrix-adafactor-s16-b1-no-ckpt
+      trainer.seq_len: 16
+      trainer.batch_size: 1
+      trainer.grad_accum_steps: 1
+      trainer.max_steps: 1
+      trainer.validate_every_steps: 99
+      checkpoint.enabled: false
+      model.gradient_checkpointing: true
+      trainer.mixed_precision: auto
+      optimizer.name: adafactor
+      optimizer.lr: 0.0001

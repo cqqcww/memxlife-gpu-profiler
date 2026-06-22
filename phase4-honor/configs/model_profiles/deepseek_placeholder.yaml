@@ -1,0 +1,24 @@
+profile:
+  name: deepseek_placeholder
+  family: deepseek-causal-lm
+  expected_memory: high_or_unknown
+  caveats:
+    - Future/stretch target. Do not use as the main Phase 4 submission path.
+    - Requires careful trust_remote_code, memory, tokenizer, and download checks.
+    - Remote safety probe can build preflight artifacts, but full AdamW 1-step OOMs on RTX 3090 24GB.
+    - Adafactor plus disabled checkpointing is validated through a 2048-token fixture probe and a 100-step WikiText-2 stability run on the RTX 3090.
+    - Treat the real-data stability result as feasibility evidence, not convergence-quality evidence.
+    - Use --preflight-only unless a low-memory optimizer, offload, or smaller model path is intentionally enabled.
+
+model:
+  name_or_path: deepseek-ai/deepseek-coder-1.3b-base
+  tokenizer_name:
+  from_pretrained: false
+  trust_remote_code: true
+  gradient_checkpointing: false
+
+trainer_recommendations:
+  seq_len: 2048
+  batch_size: 1
+  grad_accum_steps: 1
+  mixed_precision: auto

@@ -1,0 +1,28 @@
+name: deepseek_adafactor_wikitext_realdata
+description: Real-data DeepSeek Adafactor probe on WikiText-2; checks whether the fixture-selected token budget transfers to a HuggingFace dataset profile.
+base_config: configs/base/causal_lm_debug.yaml
+model_profile: configs/model_profiles/deepseek_placeholder.yaml
+data_profile: configs/data_profiles/wikitext2.yaml
+token_budgets:
+  - 512
+  - 1024
+  - 2048
+batch_size: 1
+grad_accum_steps: 1
+max_steps: 3
+log_every_steps: 1
+validate_every_steps: 3
+memory_limit_mb: 24576
+headroom_ratio_for_expand: 0.75
+min_speedup_ratio: 1.03
+stop_on_failure: true
+run_name_prefix: deepseek-realdata-wikitext-adafactor
+base_overrides:
+  data.max_samples: 2000
+  data.validation_split: 0.05
+  data.use_cache: true
+  checkpoint.enabled: false
+  model.gradient_checkpointing: false
+  trainer.mixed_precision: auto
+  optimizer.name: adafactor
+  optimizer.lr: 0.0001

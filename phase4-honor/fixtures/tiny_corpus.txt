@@ -1,0 +1,11 @@
+The little training framework woke up before sunrise and counted its tokens carefully.
+
+A small model is easier to understand than a dramatic model that never finishes running.
+
+Checkpointing is a promise: if the machine stops, the experiment can still continue.
+
+The agent reads logs, compares timing, and proposes the next tiny improvement.
+
+Training systems are made from ordinary parts connected with unusually careful state.
+
+Fast feedback makes debugging feel less like guessing and more like listening.

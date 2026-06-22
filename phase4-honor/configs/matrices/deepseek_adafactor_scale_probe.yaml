@@ -1,0 +1,34 @@
+name: deepseek_adafactor_scale_probe
+description: Compare DeepSeek Adafactor seq_len=64 with gradient checkpointing on versus off.
+base_config: configs/base/causal_lm_debug.yaml
+model_profile: configs/model_profiles/deepseek_placeholder.yaml
+data_profile: configs/data_profiles/local_fixture.yaml
+variants:
+  - name: s64_b1_gc_on_3step_val
+    overrides:
+      trainer.run_name: deepseek-adafactor-s64-b1-gc-on-3step-val
+      trainer.seq_len: 64
+      trainer.batch_size: 1
+      trainer.grad_accum_steps: 1
+      trainer.max_steps: 3
+      trainer.log_every_steps: 1
+      trainer.validate_every_steps: 3
+      checkpoint.enabled: false
+      model.gradient_checkpointing: true
+      trainer.mixed_precision: auto
+      optimizer.name: adafactor
+      optimizer.lr: 0.0001
+  - name: s64_b1_gc_off_3step_val
+    overrides:
+      trainer.run_name: deepseek-adafactor-s64-b1-gc-off-3step-val
+      trainer.seq_len: 64
+      trainer.batch_size: 1
+      trainer.grad_accum_steps: 1
+      trainer.max_steps: 3
+      trainer.log_every_steps: 1
+      trainer.validate_every_steps: 3
+      checkpoint.enabled: false
+      model.gradient_checkpointing: false
+      trainer.mixed_precision: auto
+      optimizer.name: adafactor
+      optimizer.lr: 0.0001
