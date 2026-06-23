@@ -218,6 +218,15 @@ The resumed run reached `global_step=8` and recorded:
 This was important because a useful training checkpoint is not just model
 weights. It must preserve enough state for training to continue correctly.
 
+Although TensorBoard logs were generated under each run's `tb/` directory, I
+used exported scalar tables in this report instead of screenshots. This made the
+evidence easier to reproduce and compare: the same `events.jsonl` records can be
+parsed into loss, throughput, timing, and memory tables without depending on a
+particular UI view. The TensorBoard output still served as a quick visual sanity
+check during development, especially for checking whether validation loss moved
+in the same direction as training loss and whether throughput changed after a
+configuration change.
+
 ## 8. Remote-First Development Workflow
 
 My laptop was not a good place for repeated model caches and GPU runs, so I built
@@ -546,7 +555,50 @@ cross-family profile, but not the fastest iteration path. DeepSeek was valuable
 because it exposed the AdamW memory boundary and forced the framework to become a
 better feasibility harness.
 
-## 16. Limitations And Future Work
+## 16. Connection To Earlier Phases
+
+The first three phases changed how I approached Phase 4.
+
+Phase 1 and Phase 2 made me think in terms of measured operators and specific
+shapes. In Phase 2, especially, an apparently surprising speedup was only useful
+after I understood the benchmark pattern and separated a benchmark-aware runtime
+optimization from a universal operator improvement. That lesson carried into
+Phase 4: I tried not to call cache, mixed precision, Qwen, or DeepSeek "better"
+unless timing, loss, and memory evidence supported the claim.
+
+Phase 3 made me more careful about request management, batching, and remote
+workflow reliability. That influenced the `selfcmd-workflow` design: server-side
+`/workspace` state, deployment hygiene, fetched evidence, and repeatable tests
+became part of the framework rather than afterthoughts.
+
+I did not integrate previous custom kernels directly into the training loop. I
+decided that Phase 4 would be stronger if it first demonstrated a complete,
+observable training system. The kernel-level mindset still appears in the report
+through timing breakdowns, batch-size sweeps, and memory-bound analysis, but the
+main contribution is framework coordination rather than a new low-level kernel.
+
+## 17. Final Submission Evidence Index
+
+The final submission should be read together with these project artifacts:
+
+- `report4-final.md`: polished final report for submission.
+- `report4.md`: longer working record with more chronological detail.
+- `training_framework/`: generated mini training framework.
+- `agent/`: planner, matrix runner, auto-probe, stability runner, and
+  recommendation generator.
+- `configs/`: base configs, model profiles, data profiles, matrices, and
+  auto-probe profiles.
+- `tests/`: regression tests covering config, data, checkpointing, preflight,
+  matrix selection, auto-probe, stability, and recommendation reporting.
+- `selfcmd-workflow/`: remote development and validation workflow.
+
+The most important evidence points are the final remote test result
+(`48 passed`), checkpoint/resume metadata with RNG restoration, TinyStories
+throughput/timing tables, Qwen stretch-profile comparison, DeepSeek AdamW OOM
+classification, DeepSeek Adafactor/WikiText 100-step stability, and calibrated
+memory prediction.
+
+## 18. Limitations And Future Work
 
 The framework is intentionally small. It does not implement distributed training,
 ZeRO, FSDP, Megatron-style tensor/pipeline parallelism, or custom CUDA kernels.
@@ -570,4 +622,3 @@ The most important future improvements would be:
 The final result is not a replacement for those heavy training systems. It is a
 small, inspectable control plane that helps decide what is safe and worthwhile
 to try next.
-
