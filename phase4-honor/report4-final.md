@@ -255,6 +255,55 @@ This workflow was not just convenience. Earlier phases taught me that official
 evaluation often uses the server-side `/workspace`, so code synchronization,
 remote validation, and artifact collection are part of the system.
 
+### 8.1 Development Iteration Trail
+
+The actual development process was not a straight line from "write framework" to
+"run final experiment." It was a sequence of small probes, failures, fixes, and
+new harness features.
+
+The first milestone was a minimal end-to-end training path: `debug.yaml` had to
+construct a tokenizer/model, create token blocks, train for a few steps, run
+validation, write TensorBoard/JSONL logs, save checkpoints, and resume from a
+checkpoint. This established the basic framework contract before I added larger
+models or optimization experiments.
+
+The second milestone was environment repair. The course container already had
+PyTorch, PyYAML, and TensorBoard, but not the HuggingFace packages I needed. The
+newest `transformers` release did not match the container's PyTorch version, so
+I pinned a compatible stack. Later, an ONNX/protobuf import issue appeared
+through `torch.optim.AdamW`; I fixed it by setting
+`PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python` before downstream torch imports.
+These were not model improvements, but they were necessary for a repeatable
+training system.
+
+The third milestone was extensibility. I added the base/model/data profile
+composition path, preflight reports, and the matrix runner. This produced useful
+new bugs. For example, PyYAML parsed unquoted `mixed_precision: off` as boolean
+`False`, which broke the trainer's string enum logic. Fixing that bug made the
+config layer more robust. The profile-smoke run then proved that a composed
+`tiny_gpt2 + local_fixture` config could train remotely, while the WikiText
+smoke proved the data profile could switch away from the local fixture.
+
+The fourth milestone was controlled scale-out. I did not jump directly from
+DistilGPT2 to DeepSeek. I first ran a Qwen smoke, then 60-step GPT2/Qwen
+TinyStories sanity runs, then a Qwen throughput probe. This revealed that the
+first Qwen path was slow partly because it used too few tokens per optimizer
+step and had gradient checkpointing enabled. That observation became a concrete
+profile recommendation instead of a vague "Qwen is slow" conclusion.
+
+The fifth milestone was DeepSeek safety gating. A direct AdamW smoke failed with
+CUDA OOM, so I added `--preflight-only` and a safety matrix before trying to
+"optimize" anything. Only after preflight separated model compatibility from
+optimizer memory did I add Adafactor, CUDA memory metrics, token-budget
+auto-probing, a stability runner, and finally the real-data WikiText run. Each
+new feature came from a specific failure or uncertainty in the previous run.
+
+The final milestone was workflow hardening. `selfcmd` grew from a convenience
+script into a small remote development harness: deploy-clean, dependency repair,
+remote tests, DeepSeek probes, evidence fetches, and clean tar archives that
+avoid macOS metadata pollution. This is why I now consider the workflow itself
+part of the Phase 4 system rather than a separate shell-script detail.
+
 ## 9. Tests And Validation
 
 The tests cover config loading, data shape, cache keys, checkpoint errors,
