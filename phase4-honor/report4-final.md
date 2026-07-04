@@ -1,4 +1,5 @@
 # Phase 4 Honor Report: Agentic Mini Training Framework
+23302010089 王丰淼
 
 ## 1. Project Goal And Scope
 
@@ -647,6 +648,23 @@ throughput/timing tables, Qwen stretch-profile comparison, DeepSeek AdamW OOM
 classification, DeepSeek Adafactor/WikiText 100-step stability, and calibrated
 memory prediction.
 
+Concrete source-file map, with paths relative to `phase4-honor/`. The compact
+copies are in `final_evidence/`; their original remote artifact paths are listed
+in `final_evidence/README.md`.
+
+| Claim or result | Primary source files | What the files verify |
+| --- | --- | --- |
+| Final framework regression state | `final_evidence/tests/tests-20260621T095143Z.log` | Remote pytest collected 48 tests and ended with `48 passed in 3.00s`. |
+| Remote artifact snapshot | `final_evidence/README.md` and `final_evidence/phase4-artifacts-20260621T095347Z.tar.gz` | The fetched evidence bundle used for the final report and the curated evidence-copy map. |
+| Checkpoint/resume and RNG restoration | `final_evidence/resume/debug-resume-rng-summary.md`, `final_evidence/resume/debug-resume-rng-events.jsonl`, and `tests/test_checkpoint_resume.py` | Resume behavior was tested and a remote run emitted resume-related evidence. |
+| TinyStories batch/grad-accumulation sweep | `final_evidence/matrix_summaries/batch_grad_sweep-20260616T144038Z.md` and matching `.json` | `bs8_ga1` was selected because it had the best throughput among validation-sane candidates. |
+| Qwen stretch-profile comparison | `final_evidence/matrix_summaries/qwen_throughput_probe-20260619T033125Z.md` and matching `.json` | Gradient checkpointing was slower/unstable in the short Qwen probe; `s128_b1_gc_off` was the best throughput candidate. |
+| Qwen longer compatibility run | `final_evidence/qwen/qwen-long-tinystories-summary.md`, `final_evidence/qwen/qwen-long-tinystories-preflight.md`, and `final_evidence/qwen/qwen-long-tinystories-events.jsonl` | Qwen could run through the framework, checkpoint, and emit metrics, but remained slower than the tiny GPT-style profile. |
+| DeepSeek AdamW failure classification | `final_evidence/deepseek/deepseek_safety_probe-20260619T070456Z.md` and `final_evidence/deepseek/deepseek-adamw-oom-agent-summary.md` | AdamW was classified as `cuda_oom`, making optimizer choice a feasibility decision rather than a small tuning detail. |
+| DeepSeek Adafactor token-budget auto-probe | `final_evidence/deepseek/deepseek_adafactor_wikitext_realdata-20260621T072201Z.md` and matching `.json` | WikiText-2 probes at 512/1024/2048 tokens per step all passed, with `2048` selected for stability validation. |
+| DeepSeek 100-step real-data stability | `final_evidence/deepseek/deepseek_adafactor_wikitext_realdata-stability-20260621T095331Z.md`, matching `.json`, and `final_evidence/deepseek/deepseek-wikitext-2048-100step-events.jsonl` | The selected DeepSeek/WikiText path completed `100/100` steps, averaged `3650.34` tokens/sec, and avoided OOM/NaN. |
+| Final recommendation and memory calibration | `final_evidence/recommendations/phase4-current-recommendation.md` and matching `.json` | The final recommended configuration, risk notes, next steps, and predicted-vs-actual CUDA memory calibration. |
+
 ## 18. Limitations And Future Work
 
 The framework is intentionally small. It does not implement distributed training,
@@ -671,3 +689,135 @@ The most important future improvements would be:
 The final result is not a replacement for those heavy training systems. It is a
 small, inspectable control plane that helps decide what is safe and worthwhile
 to try next.
+
+## 19. Appendix: Selected Raw Evidence
+
+This appendix keeps the final report usable even if only this markdown file is
+submitted. I include the most important compact outputs here and keep the full
+copied evidence files under `final_evidence/`.
+
+### 19.1 Remote Regression Test Output
+
+Source: `final_evidence/tests/tests-20260621T095143Z.log`
+
+```text
+collected 48 items
+Running 48 items in this shard
+
+tests/test_agent_planner.py .....                                        [ 10%]
+tests/test_auto_probe.py ....                                            [ 18%]
+tests/test_checkpoint_resume.py ...                                      [ 25%]
+tests/test_config.py .....                                               [ 35%]
+tests/test_config_merge.py ..                                            [ 39%]
+tests/test_cuda_memory_metrics.py .                                      [ 41%]
+tests/test_data.py ....                                                  [ 50%]
+tests/test_matrix_runner.py .............                                [ 77%]
+tests/test_preflight.py ....                                             [ 85%]
+tests/test_recommendation_report.py ..                                   [ 89%]
+tests/test_smoke_train.py .                                              [ 91%]
+tests/test_stability_runner.py ....                                      [100%]
+
+============================== 48 passed in 3.00s ==============================
+```
+
+### 19.2 TinyStories Batch Sweep
+
+Source: `final_evidence/matrix_summaries/batch_grad_sweep-20260616T144038Z.md`
+
+| Variant | Status | Avg tokens/sec | Last val loss | Complexity |
+| --- | ---: | ---: | ---: | --- |
+| `bs2_ga1` | `0` | 15114.61 | 5.7362 | batch=2, grad_accum=1 |
+| `bs4_ga1` | `0` | 20284.70 | 5.3667 | batch=4, grad_accum=1 |
+| `bs8_ga1` | `0` | 23949.54 | 5.1880 | batch=8, grad_accum=1 |
+| `bs4_ga2` | `0` | 22139.84 | 5.1907 | batch=4, grad_accum=2 |
+
+Selected variant: `bs8_ga1`. It had the highest average tokens/sec among
+validation-sane candidates, while `bs4_ga2` showed that gradient accumulation is
+not equivalent to a true larger batch when extra forward/backward passes are
+needed.
+
+### 19.3 Qwen Stretch-Profile Evidence
+
+Sources: `final_evidence/matrix_summaries/qwen_throughput_probe-20260619T033125Z.md`
+and `final_evidence/qwen/qwen-long-tinystories-summary.md`
+
+| Variant | Status | Avg tokens/sec | Last val loss | Main difference |
+| --- | ---: | ---: | ---: | --- |
+| `s64_b1_gc_on` | `0` | 350.41 | nan | seq_len=64, batch=1, checkpointing on |
+| `s64_b1_gc_off` | `0` | 447.92 | 9.2218 | seq_len=64, batch=1, checkpointing off |
+| `s64_b2_gc_off` | `0` | 897.67 | 8.9437 | seq_len=64, batch=2, checkpointing off |
+| `s128_b1_gc_off` | `0` | 897.69 | 8.9839 | seq_len=128, batch=1, checkpointing off |
+
+The Qwen longer run reached 60 steps with 494,032,768 parameters, final loss
+`7.695265`, final learning rate `3e-05`, and 3,510 token blocks. This was useful
+compatibility evidence, but not the fastest training path in this hardware and
+framework setup.
+
+### 19.4 DeepSeek AdamW Safety Gate
+
+Source: `final_evidence/deepseek/deepseek_safety_probe-20260619T070456Z.md`
+
+| Variant | Execution | Status | Failure | Complexity |
+| --- | --- | ---: | --- | --- |
+| `preflight_s16_b1` | preflight_only | `0` |  | batch=1, grad_accum=1, seq_len=16, checkpointing=True |
+| `adamw_s16_b1` | train | `1` | cuda_oom | batch=1, grad_accum=1, seq_len=16, checkpointing=True |
+
+This result changed the design direction. The issue was not simply "make the
+learning rate smaller"; the optimizer state and memory boundary made AdamW an
+unsafe default for this DeepSeek profile on the available GPU. That is why the
+framework added stronger preflight checks, failure classification, and
+Adafactor-based probes.
+
+### 19.5 DeepSeek Adafactor Auto-Probe And Stability
+
+Sources:
+`final_evidence/deepseek/deepseek_adafactor_wikitext_realdata-20260621T072201Z.md`
+and
+`final_evidence/deepseek/deepseek_adafactor_wikitext_realdata-stability-20260621T095331Z.md`
+
+| Variant | Status | Tokens/step | Avg tokens/sec | Last val loss | Peak CUDA MB |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `tok512` | `0` | 512 | 1341.83 | 9.8190 | 11173/13666 |
+| `tok1024` | `0` | 1024 | 2137.52 | 10.7984 | 11899/15140 |
+| `tok2048` | `0` | 2048 | 3100.38 | 10.0320 | 14305/18828 |
+
+The selected `tok2048` configuration then passed the 100-step stability run:
+
+| Metric | Value |
+| --- | ---: |
+| Completed train steps | 100/100 |
+| Logged train events | 10 |
+| Validation events | 5 |
+| Average tokens/sec | 3650.34 |
+| Last train loss | 6.3306779861450195 |
+| Last validation loss | 6.653914451599121 |
+| Peak CUDA MB allocated/reserved | 14305/18828 |
+
+### 19.6 Final Recommendation And Memory Calibration
+
+Source: `final_evidence/recommendations/phase4-current-recommendation.md`
+
+| Field | Value |
+| --- | --- |
+| Model | `deepseek-ai/deepseek-coder-1.3b-base` |
+| Data profile | `wikitext2` |
+| Optimizer | `adafactor` |
+| Tokens/step | `2048` |
+| Shape | `seq_len=2048, batch=1, grad_accum=1` |
+| Mixed precision | `auto` |
+| Gradient checkpointing | `False` |
+| Stability status | `pass` |
+| Train loss | `9.5252 -> 6.3307` |
+| Last validation loss | `6.6539` |
+
+| Memory calibration field | Value |
+| --- | ---: |
+| Predicted allocated peak | 15051 MiB |
+| Actual allocated peak | 14305 MiB |
+| Allocated prediction error | 5.2% |
+| Predicted reserved peak | 18814 MiB |
+| Actual reserved peak | 18828 MiB |
+| Reserved prediction error | -0.1% |
+
+The recommendation is to promote this configuration for a longer probe, while
+keeping AdamW classified as unsafe unless offload or sharding is introduced.

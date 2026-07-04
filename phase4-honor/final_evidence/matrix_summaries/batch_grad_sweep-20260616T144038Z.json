@@ -1,0 +1,114 @@
+{
+  "matrix": "batch_grad_sweep",
+  "records": [
+    {
+      "mode": "matrix_runner",
+      "matrix": "batch_grad_sweep",
+      "variant": "bs2_ga1",
+      "config": "/workspace/runs/matrix_configs/batch_grad_sweep-bs2_ga1.json",
+      "overrides": {
+        "trainer.run_name": "sweep-bs2-ga1",
+        "trainer.batch_size": 2,
+        "trainer.grad_accum_steps": 1,
+        "trainer.max_steps": 60
+      },
+      "complexity": {
+        "batch_size": 2,
+        "grad_accum_steps": 1,
+        "effective_batch_size": 2,
+        "label": "batch=2, grad_accum=1 (direct batch)",
+        "penalty": 1
+      },
+      "status": 0,
+      "run_dir": "/workspace/runs/sweep-bs2-ga1-20260616T143901Z",
+      "avg_tokens_per_sec": 15114.6088298271,
+      "last_train_loss": 5.630406856536865,
+      "last_val_loss": 5.736197878674763
+    },
+    {
+      "mode": "matrix_runner",
+      "matrix": "batch_grad_sweep",
+      "variant": "bs4_ga1",
+      "config": "/workspace/runs/matrix_configs/batch_grad_sweep-bs4_ga1.json",
+      "overrides": {
+        "trainer.run_name": "sweep-bs4-ga1",
+        "trainer.batch_size": 4,
+        "trainer.grad_accum_steps": 1,
+        "trainer.max_steps": 60
+      },
+      "complexity": {
+        "batch_size": 4,
+        "grad_accum_steps": 1,
+        "effective_batch_size": 4,
+        "label": "batch=4, grad_accum=1 (direct batch)",
+        "penalty": 1
+      },
+      "status": 0,
+      "run_dir": "/workspace/runs/sweep-bs4-ga1-20260616T143923Z",
+      "avg_tokens_per_sec": 20284.697039111703,
+      "last_train_loss": 5.281970500946045,
+      "last_val_loss": 5.366732960655575
+    },
+    {
+      "mode": "matrix_runner",
+      "matrix": "batch_grad_sweep",
+      "variant": "bs8_ga1",
+      "config": "/workspace/runs/matrix_configs/batch_grad_sweep-bs8_ga1.json",
+      "overrides": {
+        "trainer.run_name": "sweep-bs8-ga1",
+        "trainer.batch_size": 8,
+        "trainer.grad_accum_steps": 1,
+        "trainer.max_steps": 60
+      },
+      "complexity": {
+        "batch_size": 8,
+        "grad_accum_steps": 1,
+        "effective_batch_size": 8,
+        "label": "batch=8, grad_accum=1 (direct batch)",
+        "penalty": 1
+      },
+      "status": 0,
+      "run_dir": "/workspace/runs/sweep-bs8-ga1-20260616T143947Z",
+      "avg_tokens_per_sec": 23949.542226681155,
+      "last_train_loss": 5.1964921951293945,
+      "last_val_loss": 5.188016891479492
+    },
+    {
+      "mode": "matrix_runner",
+      "matrix": "batch_grad_sweep",
+      "variant": "bs4_ga2",
+      "config": "/workspace/runs/matrix_configs/batch_grad_sweep-bs4_ga2.json",
+      "overrides": {
+        "trainer.run_name": "sweep-bs4-ga2",
+        "trainer.batch_size": 4,
+        "trainer.grad_accum_steps": 2,
+        "trainer.max_steps": 60
+      },
+      "complexity": {
+        "batch_size": 4,
+        "grad_accum_steps": 2,
+        "effective_batch_size": 8,
+        "label": "batch=4, grad_accum=2 (extra forward/backward passes)",
+        "penalty": 2
+      },
+      "status": 0,
+      "run_dir": "/workspace/runs/sweep-bs4-ga2-20260616T144012Z",
+      "avg_tokens_per_sec": 22139.837545716455,
+      "last_train_loss": 5.2080793380737305,
+      "last_val_loss": 5.19067569006057
+    }
+  ],
+  "selection": {
+    "variant": "bs8_ga1",
+    "avg_tokens_per_sec": 23949.542226681155,
+    "last_val_loss": 5.188016891479492,
+    "complexity": {
+      "batch_size": 8,
+      "grad_accum_steps": 1,
+      "effective_batch_size": 8,
+      "label": "batch=8, grad_accum=1 (direct batch)",
+      "penalty": 1
+    },
+    "reason": "bs8_ga1 is selected because it has the highest average tokens/sec among validation-sane candidates; validation loss 5.1880 is within 0.0% of the best observed 5.1880; complexity=batch=8, grad_accum=1 (direct batch)."
+  }
+}

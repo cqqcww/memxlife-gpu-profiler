@@ -1,0 +1,21 @@
+{
+  "probe": "deepseek_adafactor_wikitext_realdata",
+  "stability": {
+    "run_dir": "/workspace/runs/deepseek-realdata-wikitext-adafactor-tok2048-stability-100step-20260621T095155Z",
+    "status": "pass",
+    "reasons": [],
+    "requested_steps": 100,
+    "completed_train_steps": 100,
+    "logged_train_events": 10,
+    "validation_events": 5,
+    "first_train_loss": 9.525160789489746,
+    "last_train_loss": 6.3306779861450195,
+    "last_val_loss": 6.653914451599121,
+    "avg_tokens_per_sec": 3650.340116151305,
+    "cuda_peak_allocated_mb": 14305.40185546875,
+    "cuda_peak_reserved_mb": 18828.0,
+    "source_recommendation": "runs/recommendations/deepseek_adafactor_wikitext_realdata-latest.json",
+    "source_variant": "tok2048",
+    "source_token_budget": 2048
+  }
+}

@@ -1,4 +1,5 @@
 # Phase 4 Honor Report：Agentic Mini Training Framework
+23302010089 王丰淼
 
 ## 1. 项目目标与范围
 
@@ -605,6 +606,22 @@ metadata、TinyStories throughput/timing tables、Qwen stretch-profile compariso
 DeepSeek AdamW OOM classification、DeepSeek Adafactor/WikiText 100-step stability、
 以及 calibrated memory prediction。
 
+下面是更具体的 source-file map，路径都相对于 `phase4-honor/`。精简证据副本放在
+`final_evidence/`，对应的原始远端 artifact 路径记录在 `final_evidence/README.md`。
+
+| 结论或结果 | 主要源文件 | 可以核验什么 |
+| --- | --- | --- |
+| 最终 framework regression 状态 | `final_evidence/tests/tests-20260621T095143Z.log` | 远端 pytest 收集 48 个测试，最终结果为 `48 passed in 3.00s`。 |
+| 远端证据快照 | `final_evidence/README.md` 和 `final_evidence/phase4-artifacts-20260621T095347Z.tar.gz` | final report 使用的 fetched evidence bundle，以及 curated evidence-copy map。 |
+| Checkpoint/resume 和 RNG restoration | `final_evidence/resume/debug-resume-rng-summary.md`、`final_evidence/resume/debug-resume-rng-events.jsonl` 和 `tests/test_checkpoint_resume.py` | resume 行为被测试覆盖，并且远端 run 产生了 resume 相关证据。 |
+| TinyStories batch/grad-accumulation sweep | `final_evidence/matrix_summaries/batch_grad_sweep-20260616T144038Z.md` 和对应 `.json` | `bs8_ga1` 因为在 validation-sane candidates 中 throughput 最好而被选中。 |
+| Qwen stretch-profile comparison | `final_evidence/matrix_summaries/qwen_throughput_probe-20260619T033125Z.md` 和对应 `.json` | 短 Qwen probe 中 gradient checkpointing 更慢/不稳定，`s128_b1_gc_off` 是 best throughput candidate。 |
+| Qwen longer compatibility run | `final_evidence/qwen/qwen-long-tinystories-summary.md`、`final_evidence/qwen/qwen-long-tinystories-preflight.md` 和 `final_evidence/qwen/qwen-long-tinystories-events.jsonl` | Qwen 可以通过 framework 跑起来、checkpoint、输出 metrics，但仍慢于 tiny GPT-style profile。 |
+| DeepSeek AdamW failure classification | `final_evidence/deepseek/deepseek_safety_probe-20260619T070456Z.md` 和 `final_evidence/deepseek/deepseek-adamw-oom-agent-summary.md` | AdamW 被分类为 `cuda_oom`，说明 optimizer choice 是 feasibility decision，不只是小参数调优。 |
+| DeepSeek Adafactor token-budget auto-probe | `final_evidence/deepseek/deepseek_adafactor_wikitext_realdata-20260621T072201Z.md` 和对应 `.json` | WikiText-2 上 512/1024/2048 tokens per step 都通过，`2048` 被选入 stability validation。 |
+| DeepSeek 100-step real-data stability | `final_evidence/deepseek/deepseek_adafactor_wikitext_realdata-stability-20260621T095331Z.md`、对应 `.json` 和 `final_evidence/deepseek/deepseek-wikitext-2048-100step-events.jsonl` | 选中的 DeepSeek/WikiText path 完成 `100/100` steps，平均 `3650.34` tokens/sec，并且没有 OOM/NaN。 |
+| 最终 recommendation 和 memory calibration | `final_evidence/recommendations/phase4-current-recommendation.md` 和对应 `.json` | 最终推荐配置、risk notes、next steps，以及 predicted-vs-actual CUDA memory calibration。 |
+
 ## 18. 当前限制与未来工作
 
 这个框架刻意保持小而清楚。它没有实现 distributed training、ZeRO、FSDP、Megatron-style
@@ -625,3 +642,128 @@ mixed precision 是稳定的，但基本中性。
 最终结果不是替代这些重型训练系统。它更像一个小而可检查的 control plane，用来判断下一步
 什么配置安全、什么实验值得做、什么失败需要先修环境或框架。
 
+## 19. Appendix：关键原始证据片段
+
+这个 appendix 的目的，是让最终报告即使单独提交，也能直接看到关键数据和输出。完整证据副本
+仍然保存在 `final_evidence/`，这里挑选最能支撑结论的片段。
+
+### 19.1 远端 Regression Test 输出
+
+来源：`final_evidence/tests/tests-20260621T095143Z.log`
+
+```text
+collected 48 items
+Running 48 items in this shard
+
+tests/test_agent_planner.py .....                                        [ 10%]
+tests/test_auto_probe.py ....                                            [ 18%]
+tests/test_checkpoint_resume.py ...                                      [ 25%]
+tests/test_config.py .....                                               [ 35%]
+tests/test_config_merge.py ..                                            [ 39%]
+tests/test_cuda_memory_metrics.py .                                      [ 41%]
+tests/test_data.py ....                                                  [ 50%]
+tests/test_matrix_runner.py .............                                [ 77%]
+tests/test_preflight.py ....                                             [ 85%]
+tests/test_recommendation_report.py ..                                   [ 89%]
+tests/test_smoke_train.py .                                              [ 91%]
+tests/test_stability_runner.py ....                                      [100%]
+
+============================== 48 passed in 3.00s ==============================
+```
+
+### 19.2 TinyStories Batch Sweep
+
+来源：`final_evidence/matrix_summaries/batch_grad_sweep-20260616T144038Z.md`
+
+| Variant | Status | Avg tokens/sec | Last val loss | Complexity |
+| --- | ---: | ---: | ---: | --- |
+| `bs2_ga1` | `0` | 15114.61 | 5.7362 | batch=2, grad_accum=1 |
+| `bs4_ga1` | `0` | 20284.70 | 5.3667 | batch=4, grad_accum=1 |
+| `bs8_ga1` | `0` | 23949.54 | 5.1880 | batch=8, grad_accum=1 |
+| `bs4_ga2` | `0` | 22139.84 | 5.1907 | batch=4, grad_accum=2 |
+
+最终选择 `bs8_ga1`。它在 validation-sane candidates 里吞吐最高；`bs4_ga2` 则说明
+gradient accumulation 不等价于真正的大 batch，因为它需要额外的 forward/backward pass。
+
+### 19.3 Qwen Stretch-Profile 证据
+
+来源：`final_evidence/matrix_summaries/qwen_throughput_probe-20260619T033125Z.md`
+和 `final_evidence/qwen/qwen-long-tinystories-summary.md`
+
+| Variant | Status | Avg tokens/sec | Last val loss | Main difference |
+| --- | ---: | ---: | ---: | --- |
+| `s64_b1_gc_on` | `0` | 350.41 | nan | seq_len=64, batch=1, checkpointing on |
+| `s64_b1_gc_off` | `0` | 447.92 | 9.2218 | seq_len=64, batch=1, checkpointing off |
+| `s64_b2_gc_off` | `0` | 897.67 | 8.9437 | seq_len=64, batch=2, checkpointing off |
+| `s128_b1_gc_off` | `0` | 897.69 | 8.9839 | seq_len=128, batch=1, checkpointing off |
+
+Qwen longer run 跑到了 60 steps，参数量为 494,032,768，final loss 是 `7.695265`，
+final learning rate 是 `3e-05`，token blocks 是 3,510。这个结果证明跨模型 profile
+可以跑通、可以 checkpoint、可以输出 metrics，但它不是当前硬件和框架下最快的训练路径。
+
+### 19.4 DeepSeek AdamW Safety Gate
+
+来源：`final_evidence/deepseek/deepseek_safety_probe-20260619T070456Z.md`
+
+| Variant | Execution | Status | Failure | Complexity |
+| --- | --- | ---: | --- | --- |
+| `preflight_s16_b1` | preflight_only | `0` |  | batch=1, grad_accum=1, seq_len=16, checkpointing=True |
+| `adamw_s16_b1` | train | `1` | cuda_oom | batch=1, grad_accum=1, seq_len=16, checkpointing=True |
+
+这个结果改变了后续设计方向。问题不是简单地“把 learning rate 调小”，而是 optimizer state
+和 memory boundary 让 AdamW 在这张 GPU 上对 DeepSeek profile 不安全。因此框架后续增加了
+更强的 preflight、failure classification，以及基于 Adafactor 的 probes。
+
+### 19.5 DeepSeek Adafactor Auto-Probe 和 Stability
+
+来源：
+`final_evidence/deepseek/deepseek_adafactor_wikitext_realdata-20260621T072201Z.md`
+和
+`final_evidence/deepseek/deepseek_adafactor_wikitext_realdata-stability-20260621T095331Z.md`
+
+| Variant | Status | Tokens/step | Avg tokens/sec | Last val loss | Peak CUDA MB |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `tok512` | `0` | 512 | 1341.83 | 9.8190 | 11173/13666 |
+| `tok1024` | `0` | 1024 | 2137.52 | 10.7984 | 11899/15140 |
+| `tok2048` | `0` | 2048 | 3100.38 | 10.0320 | 14305/18828 |
+
+被选中的 `tok2048` 配置随后通过了 100-step stability run：
+
+| Metric | Value |
+| --- | ---: |
+| Completed train steps | 100/100 |
+| Logged train events | 10 |
+| Validation events | 5 |
+| Average tokens/sec | 3650.34 |
+| Last train loss | 6.3306779861450195 |
+| Last validation loss | 6.653914451599121 |
+| Peak CUDA MB allocated/reserved | 14305/18828 |
+
+### 19.6 最终 Recommendation 和 Memory Calibration
+
+来源：`final_evidence/recommendations/phase4-current-recommendation.md`
+
+| Field | Value |
+| --- | --- |
+| Model | `deepseek-ai/deepseek-coder-1.3b-base` |
+| Data profile | `wikitext2` |
+| Optimizer | `adafactor` |
+| Tokens/step | `2048` |
+| Shape | `seq_len=2048, batch=1, grad_accum=1` |
+| Mixed precision | `auto` |
+| Gradient checkpointing | `False` |
+| Stability status | `pass` |
+| Train loss | `9.5252 -> 6.3307` |
+| Last validation loss | `6.6539` |
+
+| Memory calibration field | Value |
+| --- | ---: |
+| Predicted allocated peak | 15051 MiB |
+| Actual allocated peak | 14305 MiB |
+| Allocated prediction error | 5.2% |
+| Predicted reserved peak | 18814 MiB |
+| Actual reserved peak | 18828 MiB |
+| Reserved prediction error | -0.1% |
+
+最终建议是把这个配置推进到更长 probe，但在没有 offload 或 sharding 前，继续把 AdamW
+标记为不安全默认选项。

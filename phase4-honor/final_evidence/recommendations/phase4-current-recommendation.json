@@ -1,0 +1,60 @@
+{
+  "title": "Current Phase 4 Recommendation",
+  "recommended_config": {
+    "model": "deepseek-ai/deepseek-coder-1.3b-base",
+    "data_profile": "wikitext2",
+    "optimizer": "adafactor",
+    "tokens_per_step": 2048,
+    "seq_len": 2048,
+    "batch_size": 1,
+    "grad_accum_steps": 1,
+    "mixed_precision": "auto",
+    "gradient_checkpointing": false,
+    "checkpointing": "disabled for probe/stability runs"
+  },
+  "evidence": {
+    "probe_action": "stability_run",
+    "probe_reason": "`tok2048` is the best bounded safe point. Prefer a longer 50-100 step run before expanding further.",
+    "stability_status": "pass",
+    "completed_steps": 100,
+    "requested_steps": 100,
+    "avg_tokens_per_sec": 3650.340116151305,
+    "first_train_loss": 9.525160789489746,
+    "last_train_loss": 6.3306779861450195,
+    "last_val_loss": 6.653914451599121,
+    "cuda_peak_allocated_mb": 14305.40185546875,
+    "cuda_peak_reserved_mb": 18828.0
+  },
+  "memory_calibration": {
+    "predicted_allocated_peak_mb": 15051.1752639545,
+    "actual_allocated_peak_mb": 14305.40185546875,
+    "allocated_error_pct": 5.213229352243962,
+    "predicted_reserved_peak_mb": 18813.969079943123,
+    "actual_reserved_peak_mb": 18828.0,
+    "reserved_error_pct": -0.07452156393072669,
+    "memory_ratio_reserved": 0.7798799060048395,
+    "assumptions": {
+      "parameter_dtype": "fp32 model weights",
+      "gradient_dtype": "fp32 gradients",
+      "optimizer_state": "Adafactor uses factored second-moment state for large matrices; 0.5 bytes/parameter is a coarse calibrated proxy.",
+      "activation_proxy": "tokens_per_step * parameter_count_billions * 1.5 MB, scaled for mixed precision and gradient checkpointing",
+      "reserved_safety_factor": "1.25x proxy for allocator reservation, fragmentation, and temporary optimizer buffers"
+    }
+  },
+  "decision": {
+    "promote_for_longer_probe": true,
+    "reasons": [
+      "50-step real-data stability passed without OOM or NaN"
+    ],
+    "risks": [
+      "50 steps is feasibility evidence, not convergence evidence.",
+      "WikiText-2 subset is still small; longer runs are needed for stability confidence.",
+      "Reserved memory is high enough that larger token budgets should be gated by probes."
+    ],
+    "next_steps": [
+      "Run 100-200 step real-data stability before calling this a durable training recipe.",
+      "Keep AdamW classified as unsafe on this GPU unless offload/sharding is introduced.",
+      "Use the calibrated memory estimate as the first preflight gate for new model profiles."
+    ]
+  }
+}

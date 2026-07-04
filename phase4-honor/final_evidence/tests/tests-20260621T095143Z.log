@@ -1,0 +1,21 @@
+============================= test session starts ==============================
+platform linux -- Python 3.10.12, pytest-8.1.1, pluggy-1.4.0
+rootdir: /workspace
+plugins: anyio-4.14.0, hypothesis-5.35.1, flakefinder-1.1.0, rerunfailures-14.0, shard-0.1.2, xdist-3.5.0, xdoctest-1.0.2
+collected 48 items
+Running 48 items in this shard
+
+tests/test_agent_planner.py .....                                        [ 10%]
+tests/test_auto_probe.py ....                                            [ 18%]
+tests/test_checkpoint_resume.py ...                                      [ 25%]
+tests/test_config.py .....                                               [ 35%]
+tests/test_config_merge.py ..                                            [ 39%]
+tests/test_cuda_memory_metrics.py .                                      [ 41%]
+tests/test_data.py ....                                                  [ 50%]
+tests/test_matrix_runner.py .............                                [ 77%]
+tests/test_preflight.py ....                                             [ 85%]
+tests/test_recommendation_report.py ..                                   [ 89%]
+tests/test_smoke_train.py .                                              [ 91%]
+tests/test_stability_runner.py ....                                      [100%]
+
+============================== 48 passed in 3.00s ==============================

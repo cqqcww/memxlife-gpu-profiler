@@ -1,0 +1,144 @@
+{
+  "matrix": "qwen_throughput_probe",
+  "records": [
+    {
+      "mode": "matrix_runner",
+      "matrix": "qwen_throughput_probe",
+      "variant": "s64_b1_gc_on",
+      "config": "/workspace/runs/matrix_configs/qwen_throughput_probe-s64_b1_gc_on.json",
+      "overrides": {
+        "trainer.run_name": "qwen-probe-s64-b1-gc-on",
+        "trainer.seq_len": 64,
+        "trainer.batch_size": 1,
+        "trainer.grad_accum_steps": 1,
+        "trainer.max_steps": 20,
+        "trainer.validate_every_steps": 20,
+        "checkpoint.save_every_steps": 20,
+        "data.max_samples": 1000,
+        "model.gradient_checkpointing": true
+      },
+      "complexity": {
+        "batch_size": 1,
+        "grad_accum_steps": 1,
+        "seq_len": 64,
+        "gradient_checkpointing": true,
+        "effective_batch_size": 1,
+        "label": "batch=1, grad_accum=1 (direct batch), seq_len=64, gradient_checkpointing=True",
+        "penalty": 2
+      },
+      "status": 0,
+      "run_dir": "/workspace/runs/qwen-probe-s64-b1-gc-on-20260619T032706Z",
+      "avg_tokens_per_sec": 350.4081774466749,
+      "last_train_loss": NaN,
+      "last_val_loss": NaN
+    },
+    {
+      "mode": "matrix_runner",
+      "matrix": "qwen_throughput_probe",
+      "variant": "s64_b1_gc_off",
+      "config": "/workspace/runs/matrix_configs/qwen_throughput_probe-s64_b1_gc_off.json",
+      "overrides": {
+        "trainer.run_name": "qwen-probe-s64-b1-gc-off",
+        "trainer.seq_len": 64,
+        "trainer.batch_size": 1,
+        "trainer.grad_accum_steps": 1,
+        "trainer.max_steps": 20,
+        "trainer.validate_every_steps": 20,
+        "checkpoint.save_every_steps": 20,
+        "data.max_samples": 1000,
+        "model.gradient_checkpointing": false
+      },
+      "complexity": {
+        "batch_size": 1,
+        "grad_accum_steps": 1,
+        "seq_len": 64,
+        "gradient_checkpointing": false,
+        "effective_batch_size": 1,
+        "label": "batch=1, grad_accum=1 (direct batch), seq_len=64, gradient_checkpointing=False",
+        "penalty": 1
+      },
+      "status": 0,
+      "run_dir": "/workspace/runs/qwen-probe-s64-b1-gc-off-20260619T032851Z",
+      "avg_tokens_per_sec": 447.9228916676485,
+      "last_train_loss": 9.346986770629883,
+      "last_val_loss": 9.221814297267368
+    },
+    {
+      "mode": "matrix_runner",
+      "matrix": "qwen_throughput_probe",
+      "variant": "s64_b2_gc_off",
+      "config": "/workspace/runs/matrix_configs/qwen_throughput_probe-s64_b2_gc_off.json",
+      "overrides": {
+        "trainer.run_name": "qwen-probe-s64-b2-gc-off",
+        "trainer.seq_len": 64,
+        "trainer.batch_size": 2,
+        "trainer.grad_accum_steps": 1,
+        "trainer.max_steps": 20,
+        "trainer.validate_every_steps": 20,
+        "checkpoint.save_every_steps": 20,
+        "data.max_samples": 1000,
+        "model.gradient_checkpointing": false
+      },
+      "complexity": {
+        "batch_size": 2,
+        "grad_accum_steps": 1,
+        "seq_len": 64,
+        "gradient_checkpointing": false,
+        "effective_batch_size": 2,
+        "label": "batch=2, grad_accum=1 (direct batch), seq_len=64, gradient_checkpointing=False",
+        "penalty": 1
+      },
+      "status": 0,
+      "run_dir": "/workspace/runs/qwen-probe-s64-b2-gc-off-20260619T032947Z",
+      "avg_tokens_per_sec": 897.6725627964723,
+      "last_train_loss": 9.016267776489258,
+      "last_val_loss": 8.943740313703364
+    },
+    {
+      "mode": "matrix_runner",
+      "matrix": "qwen_throughput_probe",
+      "variant": "s128_b1_gc_off",
+      "config": "/workspace/runs/matrix_configs/qwen_throughput_probe-s128_b1_gc_off.json",
+      "overrides": {
+        "trainer.run_name": "qwen-probe-s128-b1-gc-off",
+        "trainer.seq_len": 128,
+        "trainer.batch_size": 1,
+        "trainer.grad_accum_steps": 1,
+        "trainer.max_steps": 20,
+        "trainer.validate_every_steps": 20,
+        "checkpoint.save_every_steps": 20,
+        "data.max_samples": 1000,
+        "model.gradient_checkpointing": false
+      },
+      "complexity": {
+        "batch_size": 1,
+        "grad_accum_steps": 1,
+        "seq_len": 128,
+        "gradient_checkpointing": false,
+        "effective_batch_size": 1,
+        "label": "batch=1, grad_accum=1 (direct batch), seq_len=128, gradient_checkpointing=False",
+        "penalty": 1
+      },
+      "status": 0,
+      "run_dir": "/workspace/runs/qwen-probe-s128-b1-gc-off-20260619T033035Z",
+      "avg_tokens_per_sec": 897.6871304106932,
+      "last_train_loss": 8.959257125854492,
+      "last_val_loss": 8.983927847325116
+    }
+  ],
+  "selection": {
+    "variant": "s128_b1_gc_off",
+    "avg_tokens_per_sec": 897.6871304106932,
+    "last_val_loss": 8.983927847325116,
+    "complexity": {
+      "batch_size": 1,
+      "grad_accum_steps": 1,
+      "seq_len": 128,
+      "gradient_checkpointing": false,
+      "effective_batch_size": 1,
+      "label": "batch=1, grad_accum=1 (direct batch), seq_len=128, gradient_checkpointing=False",
+      "penalty": 1
+    },
+    "reason": "s128_b1_gc_off is selected because it has the highest average tokens/sec among validation-sane candidates; validation loss 8.9839 is within 0.4% of the best observed 8.9437; complexity=batch=1, grad_accum=1 (direct batch), seq_len=128, gradient_checkpointing=False."
+  }
+}

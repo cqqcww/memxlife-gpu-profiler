@@ -1,0 +1,74 @@
+{
+  "matrix": "deepseek_safety_probe",
+  "records": [
+    {
+      "mode": "matrix_runner",
+      "matrix": "deepseek_safety_probe",
+      "variant": "preflight_s16_b1",
+      "config": "/workspace/runs/matrix_configs/deepseek_safety_probe-preflight_s16_b1.json",
+      "overrides": {
+        "trainer.run_name": "deepseek-matrix-preflight-s16-b1",
+        "trainer.seq_len": 16,
+        "trainer.batch_size": 1,
+        "trainer.grad_accum_steps": 1,
+        "trainer.max_steps": 1,
+        "trainer.validate_every_steps": 1,
+        "checkpoint.save_every_steps": 1,
+        "model.gradient_checkpointing": true,
+        "trainer.mixed_precision": "auto"
+      },
+      "execution": "preflight_only",
+      "complexity": {
+        "batch_size": 1,
+        "grad_accum_steps": 1,
+        "seq_len": 16,
+        "gradient_checkpointing": true,
+        "effective_batch_size": 1,
+        "label": "batch=1, grad_accum=1 (direct batch), seq_len=16, gradient_checkpointing=True",
+        "penalty": 2
+      },
+      "status": 0,
+      "subprocess_log": "/workspace/runs/matrix_logs/deepseek_safety_probe-preflight_s16_b1-1781852641.log",
+      "run_dir": "/workspace/runs/deepseek-matrix-preflight-s16-b1-20260619T070401Z",
+      "avg_tokens_per_sec": null,
+      "last_train_loss": null,
+      "last_val_loss": null
+    },
+    {
+      "mode": "matrix_runner",
+      "matrix": "deepseek_safety_probe",
+      "variant": "adamw_s16_b1",
+      "config": "/workspace/runs/matrix_configs/deepseek_safety_probe-adamw_s16_b1.json",
+      "overrides": {
+        "trainer.run_name": "deepseek-matrix-adamw-s16-b1",
+        "trainer.seq_len": 16,
+        "trainer.batch_size": 1,
+        "trainer.grad_accum_steps": 1,
+        "trainer.max_steps": 1,
+        "trainer.validate_every_steps": 1,
+        "checkpoint.save_every_steps": 1,
+        "model.gradient_checkpointing": true,
+        "trainer.mixed_precision": "auto"
+      },
+      "execution": "train",
+      "complexity": {
+        "batch_size": 1,
+        "grad_accum_steps": 1,
+        "seq_len": 16,
+        "gradient_checkpointing": true,
+        "effective_batch_size": 1,
+        "label": "batch=1, grad_accum=1 (direct batch), seq_len=16, gradient_checkpointing=True",
+        "penalty": 2
+      },
+      "status": 1,
+      "subprocess_log": "/workspace/runs/matrix_logs/deepseek_safety_probe-adamw_s16_b1-1781852668.log",
+      "failure_kind": "cuda_oom",
+      "failure_reason": "CUDA OOM during run. For large models this often means optimizer state or temporary optimizer buffers exceeded GPU memory.",
+      "run_dir": "/workspace/runs/deepseek-matrix-adamw-s16-b1-20260619T070428Z",
+      "avg_tokens_per_sec": null,
+      "last_train_loss": null,
+      "last_val_loss": null
+    }
+  ],
+  "selection": null
+}
