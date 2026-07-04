@@ -1,0 +1,30 @@
+spawn ssh -o StrictHostKeyChecking=no -p 40945 root@10.176.37.31 python3 -c 'import base64,subprocess; cmd=base64.b64decode("Y2QgL3dvcmtzcGFjZSAmJiBweXRob24zIGV2YWx1YXRvci9iZW5jaG1hcmtfYnJlYWtkb3duLnB5IC0tZW5naW5lIHdvcmtzcGFjZS9lbmdpbmUucHkgLS1tb2RlbC1jb25maWcgdGFyZ2V0L21vZGVsX2NvbmZpZy5qc29uIC0td2VpZ2h0LWRpciB0YXJnZXQvd2VpZ2h0cyAtLWRldmljZSBhdXRv").decode(); raise SystemExit(subprocess.call(["bash","-lc",cmd]))'
+ssh: connect to host 10.176.37.31 port 40945: Operation timed out
+spawn ssh -o StrictHostKeyChecking=no -p 40945 root@10.176.37.31 python3 -c 'import base64,subprocess; cmd=base64.b64decode("Y2QgL3dvcmtzcGFjZSAmJiBweXRob24zIGV2YWx1YXRvci9iZW5jaG1hcmtfYnJlYWtkb3duLnB5IC0tZW5naW5lIHdvcmtzcGFjZS9lbmdpbmUucHkgLS1tb2RlbC1jb25maWcgdGFyZ2V0L21vZGVsX2NvbmZpZy5qc29uIC0td2VpZ2h0LWRpciB0YXJnZXQvd2VpZ2h0cyAtLWRldmljZSBhdXRv").decode(); raise SystemExit(subprocess.call(["bash","-lc",cmd]))'
+ssh: connect to host 10.176.37.31 port 40945: Operation timed out
+spawn ssh -o StrictHostKeyChecking=no -p 40945 root@10.176.37.31 python3 -c 'import base64,subprocess; cmd=base64.b64decode("Y2QgL3dvcmtzcGFjZSAmJiBweXRob24zIGV2YWx1YXRvci9iZW5jaG1hcmtfYnJlYWtkb3duLnB5IC0tZW5naW5lIHdvcmtzcGFjZS9lbmdpbmUucHkgLS1tb2RlbC1jb25maWcgdGFyZ2V0L21vZGVsX2NvbmZpZy5qc29uIC0td2VpZ2h0LWRpciB0YXJnZXQvd2VpZ2h0cyAtLWRldmljZSBhdXRv").decode(); raise SystemExit(subprocess.call(["bash","-lc",cmd]))'
+root@10.176.37.31's password: 
+{
+  "same_prefill_seconds": 0.002880085026845336,
+  "same_decode_seconds": 0.11138722486793995,
+  "mixed_prefill_seconds": 0.00297577609308064,
+  "mixed_decode_seconds": 0.12152472208254039,
+  "same_prefill_tokens_per_second": 88886.26468101406,
+  "same_decode_tokens_per_second": 4596.577395720418,
+  "mixed_prefill_tokens_per_second": 48390.73757425263,
+  "mixed_decode_tokens_per_second": 4213.134506510093,
+  "samples": {
+    "same_prefill_seconds": [
+      0.002880085026845336
+    ],
+    "same_decode_seconds": [
+      0.11138722486793995
+    ],
+    "mixed_prefill_seconds": [
+      0.00297577609308064
+    ],
+    "mixed_decode_seconds": [
+      0.12152472208254039
+    ]
+  }
+}

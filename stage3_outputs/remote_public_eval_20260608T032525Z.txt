@@ -1,0 +1,14 @@
+spawn ssh -o StrictHostKeyChecking=no -p 53095 root@10.176.37.31 python3 -c 'import base64,subprocess; cmd=base64.b64decode("Y2QgL3dvcmtzcGFjZSAmJiBiYXNoIHNjcmlwdHMvcnVuX3B1YmxpY190ZXN0cy5zaA==").decode(); raise SystemExit(subprocess.call(["bash","-lc",cmd]))'
+root@10.176.37.31's password: 
+correctness smoke passed
+stress correctness passed
+{
+  "elapsed_seconds": 0.029919619002612308,
+  "tokens": 128,
+  "tokens_per_second": 4278.129343452676
+}
+{
+  "elapsed_seconds": 0.12495667801704258,
+  "tokens": 656,
+  "tokens_per_second": 5249.819460713653
+}

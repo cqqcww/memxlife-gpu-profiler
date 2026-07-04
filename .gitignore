@@ -12,3 +12,6 @@ build_wsl/
 phase2_runs/
 optimized_lora_autogen/
 ta_core_bundle_*.tar.gz
+.pj3_work/
+workspace/results.log
+target/weights/*.pt

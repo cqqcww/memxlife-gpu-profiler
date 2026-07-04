@@ -1,0 +1,1448 @@
+from __future__ import annotations
+
+import gc
+import math
+from pathlib import Path
+from typing import Any
+
+import torch
+import torch.nn.functional as F
+
+
+def _pick_config(config: dict[str, Any], *names: str, default: Any = None) -> Any:
+    for name in names:
+        if name in config:
+            return config[name]
+    if default is not None:
+        return default
+    raise KeyError(f"Missing model_config key; expected one of {names}")
+
+
+def _resolve_device(device: str) -> torch.device:
+    if device == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return torch.device(device)
+
+
+def _load_state_dict(weight_dir: str | Path) -> dict[str, torch.Tensor]:
+    root = Path(weight_dir)
+    candidates = [
+        root / "model.pt",
+        root / "pytorch_model.bin",
+        root / "model.pth",
+    ]
+    candidates.extend(sorted(root.glob("*.pt")))
+    candidates.extend(sorted(root.glob("*.pth")))
+    candidates.extend(sorted(root.glob("*.bin")))
+
+    for path in candidates:
+        if not path.exists():
+            continue
+        payload = torch.load(path, map_location="cpu")
+        if isinstance(payload, dict) and "state_dict" in payload:
+            payload = payload["state_dict"]
+        if isinstance(payload, dict) and "model" in payload and isinstance(payload["model"], dict):
+            payload = payload["model"]
+        if not isinstance(payload, dict):
+            raise TypeError(f"Unsupported weight payload in {path}")
+        tensors = {}
+        for key, value in payload.items():
+            if not torch.is_tensor(value):
+                continue
+            name = str(key)
+            for prefix in ("module.", "_orig_mod."):
+                if name.startswith(prefix):
+                    name = name[len(prefix) :]
+            tensors[name] = value
+        return tensors
+    raise FileNotFoundError(f"No PyTorch weight file found in {root}")
+
+
+def _runtime_dtype(tensors: dict[str, torch.Tensor], device: torch.device) -> torch.dtype | None:
+    if device.type != "cuda":
+        return None
+    for tensor in tensors.values():
+        if tensor.is_floating_point() and tensor.dtype in (torch.float16, torch.bfloat16):
+            return tensor.dtype
+    return None
+
+
+class WeightMap:
+    def __init__(self, tensors: dict[str, torch.Tensor], device: torch.device, dtype: torch.dtype | None = None):
+        self.tensors = tensors
+        self.device = device
+        self.dtype = dtype
+
+    def get(self, *names: str, required: bool = True) -> torch.Tensor | None:
+        for name in names:
+            tensor = self.tensors.get(name)
+            if tensor is not None:
+                if self.dtype is not None and tensor.is_floating_point():
+                    return tensor.to(device=self.device, dtype=self.dtype, non_blocking=True).contiguous()
+                return tensor.to(device=self.device, non_blocking=True).contiguous()
+        if required:
+            raise KeyError("Missing required weight; tried: " + ", ".join(names))
+        return None
+
+
+class RequestState:
+    __slots__ = ("token_buffer", "length", "kv_cache", "batch_cache", "batch_row", "batch_token_buffer")
+
+    def __init__(
+        self,
+        token_buffer: torch.Tensor,
+        length: int,
+        kv_cache: list[tuple[torch.Tensor, torch.Tensor]],
+        batch_cache: list[tuple[torch.Tensor, torch.Tensor]] | None = None,
+        batch_row: int = -1,
+        batch_token_buffer: torch.Tensor | None = None,
+    ):
+        self.token_buffer = token_buffer
+        self.length = length
+        self.kv_cache = kv_cache
+        self.batch_cache = batch_cache
+        self.batch_row = batch_row
+        self.batch_token_buffer = batch_token_buffer
+
+    @property
+    def tokens(self) -> torch.Tensor:
+        return self.token_buffer[: self.length]
+
+
+class Engine:
+    def __init__(self, model_config: dict[str, Any], weight_dir: str, device: str = "cuda"):
+        self.config = dict(model_config)
+        self.device = _resolve_device(device)
+        self.hidden_size = int(_pick_config(self.config, "hidden_size", "dim", "n_embd"))
+        self.num_layers = int(_pick_config(self.config, "num_hidden_layers", "n_layers", "num_layers", "n_layer"))
+        self.num_heads = int(_pick_config(self.config, "num_attention_heads", "n_heads", "num_heads", "n_head"))
+        self.num_kv_heads = int(
+            _pick_config(self.config, "num_key_value_heads", "n_kv_heads", "num_kv_heads", default=self.num_heads)
+        )
+        self.vocab_size = int(_pick_config(self.config, "vocab_size"))
+        self.intermediate_size = int(
+            _pick_config(self.config, "intermediate_size", "hidden_dim", "ffn_hidden_size", "ffn_dim", default=0) or 0
+        )
+        self.rms_norm_eps = float(_pick_config(self.config, "rms_norm_eps", "norm_eps", default=1e-5))
+        self.rope_theta = float(_pick_config(self.config, "rope_theta", "rope_base", default=10000.0))
+        self.rope_style = str(_pick_config(self.config, "rope_style", "rotary_style", default="interleaved"))
+        self.varlen_prefill_padding_ratio = float(_pick_config(self.config, "varlen_prefill_padding_ratio", default=2.0))
+        self.varlen_decode_padding_ratio = float(_pick_config(self.config, "varlen_decode_padding_ratio", default=1.75))
+        self.max_seq_len = int(
+            _pick_config(
+                self.config,
+                "max_position_embeddings",
+                "max_seq_len",
+                "max_sequence_length",
+                "seq_len",
+                default=4096,
+            )
+        )
+        self.head_dim = int(_pick_config(self.config, "head_dim", default=self.hidden_size // self.num_heads))
+
+        if self.hidden_size % self.num_heads != 0:
+            raise ValueError("hidden_size must be divisible by num_attention_heads")
+        if self.num_heads % self.num_kv_heads != 0:
+            raise ValueError("num_attention_heads must be divisible by num_key_value_heads")
+        self.q_size = self.num_heads * self.head_dim
+        self.kv_size = self.num_kv_heads * self.head_dim
+        self.kv_repeat = self.num_heads // self.num_kv_heads
+
+        state_dict = _load_state_dict(weight_dir)
+        self.weights = WeightMap(state_dict, self.device, _runtime_dtype(state_dict, self.device))
+        self.embed_tokens = self.weights.get(
+            "tok_embeddings.weight",
+            "model.tok_embeddings.weight",
+            "model.embed_tokens.weight",
+            "embed_tokens.weight",
+        )
+        self.final_norm = self.weights.get("norm.weight", "model.norm.weight", "final_norm.weight")
+        self.lm_head = self.weights.get("output.weight", "lm_head.weight", required=False)
+        if self.lm_head is None:
+            self.lm_head = self.embed_tokens
+
+        self.layers = [self._load_layer(layer_idx) for layer_idx in range(self.num_layers)]
+        self.weights = None
+        gc.collect()
+        if self.device.type == "cuda":
+            torch.cuda.empty_cache()
+        self.requests: dict[Any, RequestState] = {}
+        self._rope_cache: dict[tuple[torch.dtype, torch.device], tuple[torch.Tensor, torch.Tensor]] = {}
+        self._position_ids_cache: torch.Tensor | None = None
+        self._has_sdpa = hasattr(F, "scaled_dot_product_attention")
+        self._has_fused_rms_norm = hasattr(F, "rms_norm")
+        self._warmup_kernels()
+
+    def _load_layer(self, layer_idx: int) -> dict[str, torch.Tensor]:
+        prefixes = [f"layers.{layer_idx}", f"model.layers.{layer_idx}"]
+
+        def names(*suffixes: str) -> list[str]:
+            return [f"{prefix}.{suffix}" for prefix in prefixes for suffix in suffixes]
+
+        q = self.weights.get(*names("attention.wq.weight", "self_attn.q_proj.weight", "wq.weight", "q_proj.weight"))
+        k = self.weights.get(*names("attention.wk.weight", "self_attn.k_proj.weight", "wk.weight", "k_proj.weight"))
+        v = self.weights.get(*names("attention.wv.weight", "self_attn.v_proj.weight", "wv.weight", "v_proj.weight"))
+        w1 = self.weights.get(*names("feed_forward.w1.weight", "mlp.gate_proj.weight", "w1.weight", "gate_proj.weight"))
+        w3 = self.weights.get(*names("feed_forward.w3.weight", "mlp.up_proj.weight", "w3.weight", "up_proj.weight"))
+
+        return {
+            "attn_norm": self.weights.get(*names("attention_norm.weight", "input_layernorm.weight")),
+            "qkv": torch.cat((q, k, v), dim=0).contiguous(),
+            "o": self.weights.get(*names("attention.wo.weight", "self_attn.o_proj.weight", "wo.weight", "o_proj.weight")),
+            "ffn_norm": self.weights.get(*names("ffn_norm.weight", "post_attention_layernorm.weight")),
+            "w13": torch.cat((w1, w3), dim=0).contiguous(),
+            "w2": self.weights.get(*names("feed_forward.w2.weight", "mlp.down_proj.weight", "w2.weight", "down_proj.weight")),
+        }
+
+    def _warmup_kernels(self) -> None:
+        if self.device.type != "cuda":
+            return
+        token = torch.zeros((1,), device=self.device, dtype=torch.long)
+        _, single_cache = self._forward_with_cache(token)
+
+        batch_tokens = torch.zeros((2, 1), device=self.device, dtype=torch.long)
+        _, batch_cache = self._forward_prefill_batch(batch_tokens)
+        self._forward_prefill_varlen_batch(torch.zeros((2, 2), device=self.device, dtype=torch.long), [1, 2])
+
+        single_state = self._new_request_state(token, single_cache)
+        self._ensure_cache_capacity(single_state, 2)
+        self._ensure_token_capacity(single_state, 2)
+        self._forward_decode_batch(token, [single_state], 1)
+
+        batch_states = [self._new_request_state_from_batch(token, batch_cache, row) for row in range(batch_tokens.shape[0])]
+        for state in batch_states:
+            self._ensure_cache_capacity(state, 2)
+            self._ensure_token_capacity(state, 2)
+        self._forward_decode_batch(torch.zeros((2,), device=self.device, dtype=torch.long), batch_states, 1)
+
+        longer_tokens = torch.zeros((2,), device=self.device, dtype=torch.long)
+        _, longer_cache = self._forward_with_cache(longer_tokens)
+        varlen_states = [
+            self._new_request_state(token, single_cache),
+            self._new_request_state(longer_tokens, longer_cache),
+        ]
+        for state in varlen_states:
+            self._ensure_cache_capacity(state, state.length + 1)
+            self._ensure_token_capacity(state, state.length + 1)
+        self._forward_decode_varlen_batch(
+            torch.zeros((2,), device=self.device, dtype=torch.long),
+            varlen_states,
+            [state.length for state in varlen_states],
+            max(state.length for state in varlen_states),
+        )
+
+        def warm_same_batch(batch_size: int, seq_len: int, decode_steps: int) -> None:
+            tokens = torch.zeros((batch_size, seq_len), device=self.device, dtype=torch.long)
+            _, cache = self._forward_prefill_batch(tokens)
+            states = self._new_shared_request_states_from_batch([tokens[row] for row in range(batch_size)], cache)
+            decode_tokens = torch.zeros((batch_size,), device=self.device, dtype=torch.long)
+            for step in range(decode_steps):
+                position = seq_len + step
+                self._ensure_shared_cache_capacity(states, position + 1)
+                for state in states:
+                    self._ensure_token_capacity(state, position + 1)
+                self._forward_decode_shared_batch(decode_tokens, states, position)
+
+        def warm_varlen_batch(batch_size: int, seq_len: int, decode_steps: int) -> None:
+            lengths = [max(1, seq_len - 4 * row) for row in range(batch_size)]
+            tokens = torch.zeros((batch_size, seq_len), device=self.device, dtype=torch.long)
+            _, cache = self._forward_prefill_varlen_batch(tokens, lengths)
+            states = self._new_shared_request_states_from_batch(
+                [tokens[row, :length] for row, length in enumerate(lengths)],
+                cache,
+                cache_lens=lengths,
+                zero_unused=True,
+            )
+            decode_tokens = torch.zeros((batch_size,), device=self.device, dtype=torch.long)
+            for _ in range(decode_steps):
+                max_length = max(lengths)
+                self._ensure_shared_cache_capacity(states, max_length + 1)
+                for state, length in zip(states, lengths):
+                    self._ensure_token_capacity(state, length + 1)
+                self._forward_decode_varlen_shared_batch(decode_tokens, states, lengths, max_length)
+                for idx, state in enumerate(states):
+                    lengths[idx] += 1
+                    state.length = lengths[idx]
+
+        warm_same_batch(4, max(1, min(16, self.max_seq_len)), 16)
+        warm_same_batch(8, max(1, min(32, self.max_seq_len)), 16)
+        warm_varlen_batch(8, max(1, min(32, self.max_seq_len)), 16)
+        torch.cuda.synchronize()
+
+    def _normalize_request_ids(self, request_ids) -> list[Any]:
+        if torch.is_tensor(request_ids):
+            return request_ids.detach().cpu().flatten().tolist()
+        return list(request_ids)
+
+    def prefill(self, request_ids, input_ids):
+        request_ids = self._normalize_request_ids(request_ids)
+        if len(request_ids) != len(input_ids):
+            raise ValueError("input_ids length must match request_ids length")
+        if len(request_ids) == 0:
+            return torch.empty((0, self.vocab_size), device=self.device, dtype=self.lm_head.dtype)
+
+        normalized = [(request_id, self._normalize_tokens(tokens)) for request_id, tokens in zip(request_ids, input_ids)]
+        lengths = [tokens.numel() for _, tokens in normalized]
+        if any(seq_len == 0 for seq_len in lengths):
+            raise ValueError("Requests must contain at least one token")
+        max_len = max(lengths)
+        min_len = min(lengths)
+        valid_tokens = sum(lengths)
+        padded_tokens = len(normalized) * max_len
+        if (
+            len(normalized) > 1
+            and min_len != max_len
+            and padded_tokens <= valid_tokens * self.varlen_prefill_padding_ratio
+        ):
+            batch_tokens = torch.zeros((len(normalized), max_len), device=self.device, dtype=torch.long)
+            for row, (_, tokens) in enumerate(normalized):
+                batch_tokens[row, : tokens.numel()].copy_(tokens)
+            batch_logits, batch_kv_cache = self._forward_prefill_varlen_batch(batch_tokens, lengths)
+            batch_states = self._new_shared_request_states_from_batch(
+                [token_tensor for _, token_tensor in normalized],
+                batch_kv_cache,
+                cache_lens=lengths,
+                zero_unused=True,
+            )
+            for row, (request_id, _) in enumerate(normalized):
+                self.requests[request_id] = batch_states[row]
+            return batch_logits
+
+        grouped: dict[int, list[tuple[int, Any, torch.Tensor]]] = {}
+        for idx, (request_id, tokens) in enumerate(normalized):
+            grouped.setdefault(tokens.numel(), []).append((idx, request_id, tokens))
+
+        logits: list[torch.Tensor | None] = [None] * len(request_ids)
+        for seq_len, entries in grouped.items():
+            if len(entries) == 1:
+                idx, request_id, token_tensor = entries[0]
+                request_logits, kv_cache = self._forward_with_cache(token_tensor)
+                self.requests[request_id] = self._new_request_state(token_tensor, kv_cache)
+                logits[idx] = request_logits
+                continue
+
+            batch_tokens = torch.stack([tokens for _, _, tokens in entries], dim=0)
+            batch_logits, batch_kv_cache = self._forward_prefill_batch(batch_tokens)
+            batch_states = self._new_shared_request_states_from_batch(
+                [token_tensor for _, _, token_tensor in entries],
+                batch_kv_cache,
+            )
+            for row, (idx, request_id, _) in enumerate(entries):
+                self.requests[request_id] = batch_states[row]
+                logits[idx] = batch_logits[row]
+
+        if any(logit is None for logit in logits):
+            raise RuntimeError("prefill did not produce logits for every request")
+        return torch.stack([logit for logit in logits if logit is not None], dim=0)
+
+    def decode(self, request_ids, token_ids):
+        request_ids = self._normalize_request_ids(request_ids)
+        token_ids = self._normalize_tokens(token_ids)
+        if token_ids.numel() != len(request_ids):
+            raise ValueError("token_ids length must match request_ids length")
+        if len(request_ids) == 0:
+            return torch.empty((0, self.vocab_size), device=self.device, dtype=self.lm_head.dtype)
+
+        states: list[RequestState] = []
+        same_length = True
+        position_offset: int | None = None
+        for request_id in request_ids:
+            if request_id not in self.requests:
+                raise KeyError(f"Unknown request id {request_id!r}; call prefill before decode")
+            state = self.requests[request_id]
+            states.append(state)
+            if position_offset is None:
+                position_offset = state.length
+            elif state.length != position_offset:
+                same_length = False
+
+        if same_length and position_offset is not None:
+            shared_rows = self._shared_batch_rows(states)
+            if shared_rows is None and self._should_promote_same_length_batch(states, position_offset):
+                states = self._promote_request_states_to_shared_batch(request_ids, states)
+                shared_rows = self._shared_batch_rows(states)
+            if shared_rows is not None:
+                self._ensure_shared_cache_capacity(states, position_offset + 1)
+                self._ensure_shared_token_capacity(states, position_offset + 1)
+                logits = self._forward_decode_shared_batch(token_ids, states, position_offset, shared_rows)
+            else:
+                for state in states:
+                    self._ensure_cache_capacity(state, position_offset + 1)
+                    self._ensure_token_capacity(state, position_offset + 1)
+                logits = self._forward_decode_batch(token_ids, states, position_offset)
+            if shared_rows is not None and states[0].batch_token_buffer is not None:
+                if self._is_dense_batch_rows(shared_rows, states[0].batch_token_buffer.shape[0]):
+                    states[0].batch_token_buffer[:, position_offset].copy_(token_ids)
+                else:
+                    positions = torch.full_like(shared_rows, position_offset)
+                    states[0].batch_token_buffer.index_put_((shared_rows, positions), token_ids, accumulate=False)
+                for state in states:
+                    state.length = position_offset + 1
+            else:
+                for idx, state in enumerate(states):
+                    state.token_buffer[position_offset].copy_(token_ids[idx])
+                    state.length = position_offset + 1
+            return logits
+
+        lengths = [state.length for state in states]
+        max_position = max(lengths)
+        valid_tokens = sum(length + 1 for length in lengths)
+        padded_tokens = len(states) * (max_position + 1)
+        if len(states) > 1 and padded_tokens <= valid_tokens * self.varlen_decode_padding_ratio:
+            shared_rows = self._shared_batch_rows(states)
+            if shared_rows is None and self._should_promote_to_shared_batch(states, lengths):
+                states = self._promote_request_states_to_shared_batch(request_ids, states)
+                shared_rows = self._shared_batch_rows(states)
+            if shared_rows is not None:
+                self._ensure_shared_cache_capacity(states, max_position + 1)
+                self._ensure_shared_token_capacity(states, max_position + 1)
+                positions = None
+                if states[0].batch_token_buffer is not None:
+                    positions = torch.tensor(lengths, device=self.device, dtype=torch.long)
+                logits = self._forward_decode_varlen_shared_batch(
+                    token_ids, states, lengths, max_position, shared_rows, positions
+                )
+            else:
+                for state, length in zip(states, lengths):
+                    self._ensure_cache_capacity(state, length + 1)
+                    self._ensure_token_capacity(state, length + 1)
+                logits = self._forward_decode_varlen_batch(token_ids, states, lengths, max_position)
+            if shared_rows is not None and states[0].batch_token_buffer is not None:
+                states[0].batch_token_buffer.index_put_((shared_rows, positions), token_ids, accumulate=False)
+                for state, length in zip(states, lengths):
+                    state.length = length + 1
+            else:
+                for idx, (state, length) in enumerate(zip(states, lengths)):
+                    state.token_buffer[length].copy_(token_ids[idx])
+                    state.length = length + 1
+            return logits
+
+        grouped: dict[int, list[tuple[int, Any, RequestState]]] = {}
+        for idx, (request_id, state) in enumerate(zip(request_ids, states)):
+            grouped.setdefault(state.length, []).append((idx, request_id, state))
+
+        logits: list[torch.Tensor | None] = [None] * len(request_ids)
+        for position_offset, entries in grouped.items():
+            batch_tokens = torch.stack([token_ids[idx] for idx, _, _ in entries], dim=0)
+            batch_states = [state for _, _, state in entries]
+            for _, _, state in entries:
+                self._ensure_cache_capacity(state, position_offset + 1)
+                self._ensure_token_capacity(state, position_offset + 1)
+            batch_logits = self._forward_decode_batch(batch_tokens, batch_states, position_offset)
+            for row, (idx, _, state) in enumerate(entries):
+                state.token_buffer[position_offset].copy_(token_ids[idx])
+                state.length = position_offset + 1
+                logits[idx] = batch_logits[row]
+
+        if any(logit is None for logit in logits):
+            raise RuntimeError("decode did not produce logits for every request")
+        return torch.stack([logit for logit in logits if logit is not None], dim=0)
+
+    def remove(self, request_ids):
+        request_ids = self._normalize_request_ids(request_ids)
+        for request_id in request_ids:
+            self.requests.pop(request_id, None)
+
+    def _cache_capacity(self, required_len: int) -> int:
+        if required_len <= 0:
+            return 1
+        doubled = max(16, required_len * 2)
+        return max(required_len, min(self.max_seq_len, doubled))
+
+    def _new_request_state(
+        self,
+        tokens: torch.Tensor,
+        compact_cache: list[tuple[torch.Tensor, torch.Tensor]],
+    ) -> RequestState:
+        capacity = self._cache_capacity(tokens.numel())
+        token_buffer = torch.empty((capacity,), device=tokens.device, dtype=tokens.dtype)
+        token_buffer[: tokens.numel()].copy_(tokens)
+        kv_cache = []
+        for k, v in compact_cache:
+            k_buffer = torch.empty((capacity, *k.shape[1:]), device=k.device, dtype=k.dtype)
+            v_buffer = torch.empty((capacity, *v.shape[1:]), device=v.device, dtype=v.dtype)
+            k_buffer[: k.shape[0]].copy_(k)
+            v_buffer[: v.shape[0]].copy_(v)
+            kv_cache.append((k_buffer, v_buffer))
+        return RequestState(token_buffer=token_buffer, length=tokens.numel(), kv_cache=kv_cache)
+
+    def _new_request_state_from_batch(
+        self,
+        tokens: torch.Tensor,
+        batch_cache: list[tuple[torch.Tensor, torch.Tensor]],
+        row: int,
+        cache_len: int | None = None,
+    ) -> RequestState:
+        capacity = self._cache_capacity(tokens.numel())
+        token_buffer = torch.empty((capacity,), device=tokens.device, dtype=tokens.dtype)
+        token_buffer[: tokens.numel()].copy_(tokens)
+        cache_len = tokens.numel() if cache_len is None else cache_len
+        kv_cache = []
+        for k, v in batch_cache:
+            k_row = k[row]
+            v_row = v[row]
+            k_buffer = torch.empty((capacity, *k_row.shape[1:]), device=k.device, dtype=k.dtype)
+            v_buffer = torch.empty((capacity, *v_row.shape[1:]), device=v.device, dtype=v.dtype)
+            k_buffer[:cache_len].copy_(k_row[:cache_len])
+            v_buffer[:cache_len].copy_(v_row[:cache_len])
+            kv_cache.append((k_buffer, v_buffer))
+        return RequestState(token_buffer=token_buffer, length=tokens.numel(), kv_cache=kv_cache)
+
+    def _promote_request_states_to_shared_batch(
+        self,
+        request_ids: list[Any],
+        states: list[RequestState],
+    ) -> list[RequestState]:
+        if len(states) <= 1:
+            return states
+
+        batch_size = len(states)
+        max_len = max(state.length for state in states)
+        capacity = self._cache_capacity(max_len)
+        zero_unused = any(state.length != max_len for state in states)
+
+        shared_cache = []
+        for layer_idx in range(self.num_layers):
+            sample_k, sample_v = states[0].kv_cache[layer_idx]
+            if zero_unused:
+                k_buffer = torch.zeros((batch_size, capacity, *sample_k.shape[1:]), device=sample_k.device, dtype=sample_k.dtype)
+                v_buffer = torch.zeros((batch_size, capacity, *sample_v.shape[1:]), device=sample_v.device, dtype=sample_v.dtype)
+            else:
+                k_buffer = torch.empty((batch_size, capacity, *sample_k.shape[1:]), device=sample_k.device, dtype=sample_k.dtype)
+                v_buffer = torch.empty((batch_size, capacity, *sample_v.shape[1:]), device=sample_v.device, dtype=sample_v.dtype)
+            for row, state in enumerate(states):
+                k_state, v_state = state.kv_cache[layer_idx]
+                k_buffer[row, : state.length].copy_(k_state[: state.length])
+                v_buffer[row, : state.length].copy_(v_state[: state.length])
+            shared_cache.append((k_buffer, v_buffer))
+
+        token_slack = 128 if max_len >= 32 else 32
+        token_capacity = min(self.max_seq_len, max(capacity, max_len + token_slack))
+        shared_token_buffer = torch.empty(
+            (batch_size, token_capacity),
+            device=states[0].token_buffer.device,
+            dtype=states[0].token_buffer.dtype,
+        )
+        for row, state in enumerate(states):
+            shared_token_buffer[row, : state.length].copy_(state.tokens)
+
+        promoted_states: list[RequestState] = []
+        for row, (request_id, state) in enumerate(zip(request_ids, states)):
+            promoted_state = RequestState(
+                token_buffer=shared_token_buffer[row],
+                length=state.length,
+                kv_cache=[(k_buffer[row], v_buffer[row]) for k_buffer, v_buffer in shared_cache],
+                batch_cache=shared_cache,
+                batch_row=row,
+                batch_token_buffer=shared_token_buffer,
+            )
+            self.requests[request_id] = promoted_state
+            promoted_states.append(promoted_state)
+        return promoted_states
+
+    def _new_shared_request_states_from_batch(
+        self,
+        token_tensors: list[torch.Tensor],
+        batch_cache: list[tuple[torch.Tensor, torch.Tensor]],
+        cache_lens: list[int] | None = None,
+        zero_unused: bool = False,
+    ) -> list[RequestState]:
+        batch_size = len(token_tensors)
+        max_len = max(tokens.numel() for tokens in token_tensors)
+        capacity = self._cache_capacity(max_len)
+        cache_lens = [tokens.numel() for tokens in token_tensors] if cache_lens is None else cache_lens
+
+        shared_cache = []
+        for k, v in batch_cache:
+            shape = (batch_size, capacity, *k.shape[2:])
+            if zero_unused:
+                k_buffer = torch.zeros(shape, device=k.device, dtype=k.dtype)
+                v_buffer = torch.zeros_like(k_buffer)
+            else:
+                k_buffer = torch.empty(shape, device=k.device, dtype=k.dtype)
+                v_buffer = torch.empty((batch_size, capacity, *v.shape[2:]), device=v.device, dtype=v.dtype)
+            for row, cache_len in enumerate(cache_lens):
+                k_buffer[row, :cache_len].copy_(k[row, :cache_len])
+                v_buffer[row, :cache_len].copy_(v[row, :cache_len])
+            shared_cache.append((k_buffer, v_buffer))
+
+        token_slack = 128 if max_len >= 32 else 32
+        token_capacity = min(self.max_seq_len, max(capacity, max_len + token_slack))
+        shared_token_buffer = torch.empty((batch_size, token_capacity), device=token_tensors[0].device, dtype=token_tensors[0].dtype)
+        for row, tokens in enumerate(token_tensors):
+            shared_token_buffer[row, : tokens.numel()].copy_(tokens)
+
+        states = []
+        for row, tokens in enumerate(token_tensors):
+            kv_cache = [(k_buffer[row], v_buffer[row]) for k_buffer, v_buffer in shared_cache]
+            states.append(
+                RequestState(
+                    token_buffer=shared_token_buffer[row],
+                    length=tokens.numel(),
+                    kv_cache=kv_cache,
+                    batch_cache=shared_cache,
+                    batch_row=row,
+                    batch_token_buffer=shared_token_buffer,
+                )
+            )
+        return states
+
+    def _ensure_token_capacity(self, state: RequestState, required_len: int) -> None:
+        current_capacity = state.token_buffer.shape[0]
+        if current_capacity >= required_len:
+            return
+        new_capacity = max(required_len, min(self.max_seq_len, max(16, current_capacity * 2)))
+        token_buffer = torch.empty((new_capacity,), device=state.token_buffer.device, dtype=state.token_buffer.dtype)
+        token_buffer[: state.length].copy_(state.token_buffer[: state.length])
+        state.token_buffer = token_buffer
+        state.batch_token_buffer = None
+
+    def _ensure_shared_token_capacity(self, states: list[RequestState], required_len: int) -> None:
+        batch_token_buffer = states[0].batch_token_buffer
+        if batch_token_buffer is None:
+            for state in states:
+                self._ensure_token_capacity(state, required_len)
+            return
+        current_capacity = batch_token_buffer.shape[1]
+        if current_capacity >= required_len:
+            return
+        current_len = max(state.length for state in states)
+        new_capacity = max(required_len, min(self.max_seq_len, max(16, current_capacity * 2)))
+        token_buffer = torch.empty(
+            (batch_token_buffer.shape[0], new_capacity),
+            device=batch_token_buffer.device,
+            dtype=batch_token_buffer.dtype,
+        )
+        token_buffer[:, :current_len].copy_(batch_token_buffer[:, :current_len])
+        for state in states:
+            state.batch_token_buffer = token_buffer
+            state.token_buffer = token_buffer[state.batch_row]
+
+    def _ensure_cache_capacity(self, state: RequestState, required_len: int) -> None:
+        current_capacity = state.kv_cache[0][0].shape[0] if state.kv_cache else 0
+        if current_capacity >= required_len:
+            return
+        current_len = state.length
+        new_capacity = max(required_len, min(self.max_seq_len, max(16, current_capacity * 2)))
+        grown_cache = []
+        for k, v in state.kv_cache:
+            k_buffer = torch.empty((new_capacity, *k.shape[1:]), device=k.device, dtype=k.dtype)
+            v_buffer = torch.empty((new_capacity, *v.shape[1:]), device=v.device, dtype=v.dtype)
+            k_buffer[:current_len].copy_(k[:current_len])
+            v_buffer[:current_len].copy_(v[:current_len])
+            grown_cache.append((k_buffer, v_buffer))
+        state.kv_cache = grown_cache
+        state.batch_cache = None
+        state.batch_row = -1
+
+    def _shared_batch_rows(self, states: list[RequestState]) -> torch.Tensor | None:
+        if not states:
+            return None
+        batch_cache = states[0].batch_cache
+        if batch_cache is None:
+            return None
+        if not all(state.batch_cache is batch_cache for state in states):
+            return None
+        return torch.tensor([state.batch_row for state in states], device=self.device, dtype=torch.long)
+
+    def _is_dense_batch_rows(self, rows: torch.Tensor, expected_size: int) -> bool:
+        return rows.numel() == expected_size and torch.equal(rows, self._position_ids(expected_size))
+
+    def _should_promote_to_shared_batch(self, states: list[RequestState], lengths: list[int]) -> bool:
+        if len(states) < 4:
+            return False
+        min_length = min(lengths)
+        max_length = max(lengths)
+        if max_length < 16:
+            return False
+        if (max_length - min_length) < 2:
+            return False
+        return True
+
+    def _should_promote_same_length_batch(self, states: list[RequestState], position_offset: int) -> bool:
+        batch_size = len(states)
+        if batch_size < 4:
+            return False
+        if position_offset < 16:
+            return False
+        return True
+
+    def _ensure_shared_cache_capacity(self, states: list[RequestState], required_len: int) -> None:
+        batch_cache = states[0].batch_cache
+        if batch_cache is None:
+            raise RuntimeError("shared cache capacity requested for non-shared states")
+        current_capacity = batch_cache[0][0].shape[1]
+        if current_capacity >= required_len:
+            return
+        current_len = max(state.length for state in states)
+        new_capacity = max(required_len, min(self.max_seq_len, max(16, current_capacity * 2)))
+        zero_new_cache = any(state.length != current_len for state in states)
+        grown_cache = []
+        for k, v in batch_cache:
+            if zero_new_cache:
+                k_buffer = torch.zeros((k.shape[0], new_capacity, *k.shape[2:]), device=k.device, dtype=k.dtype)
+                v_buffer = torch.zeros((v.shape[0], new_capacity, *v.shape[2:]), device=v.device, dtype=v.dtype)
+            else:
+                k_buffer = torch.empty((k.shape[0], new_capacity, *k.shape[2:]), device=k.device, dtype=k.dtype)
+                v_buffer = torch.empty((v.shape[0], new_capacity, *v.shape[2:]), device=v.device, dtype=v.dtype)
+            k_buffer[:, :current_len].copy_(k[:, :current_len])
+            v_buffer[:, :current_len].copy_(v[:, :current_len])
+            grown_cache.append((k_buffer, v_buffer))
+        batch_cache[:] = grown_cache
+        for state in states:
+            state.kv_cache = [(k_buffer[state.batch_row], v_buffer[state.batch_row]) for k_buffer, v_buffer in batch_cache]
+
+    def _normalize_tokens(self, tokens) -> torch.Tensor:
+        if not torch.is_tensor(tokens):
+            tokens = torch.tensor(tokens, dtype=torch.long)
+        return tokens.to(device=self.device, dtype=torch.long, non_blocking=True).flatten()
+
+    def _rms_norm(self, hidden: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+        if self._has_fused_rms_norm:
+            return F.rms_norm(hidden, (hidden.shape[-1],), weight=weight, eps=self.rms_norm_eps)
+        variance = hidden.pow(2).mean(dim=-1, keepdim=True)
+        return hidden * torch.rsqrt(variance + self.rms_norm_eps) * weight
+
+    def _rope_cos_sin(self, seq_len: int, dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor]:
+        key = (dtype, self.device)
+        cached = self._rope_cache.get(key)
+        if cached is not None and cached[0].shape[0] >= seq_len:
+            return cached[0][:seq_len], cached[1][:seq_len]
+
+        cached_len = 0 if cached is None else cached[0].shape[0]
+        target_len = max(seq_len, cached_len * 2, 16)
+        if seq_len <= self.max_seq_len:
+            target_len = min(self.max_seq_len, 1 << (target_len - 1).bit_length())
+        inv_freq = 1.0 / (
+            self.rope_theta ** (torch.arange(0, self.head_dim, 2, device=self.device, dtype=torch.float32) / self.head_dim)
+        )
+        positions = torch.arange(target_len, device=self.device, dtype=torch.float32)
+        freqs = torch.outer(positions, inv_freq)
+        cos = freqs.cos().to(dtype=dtype)
+        sin = freqs.sin().to(dtype=dtype)
+        self._rope_cache[key] = (cos, sin)
+        return cos[:seq_len], sin[:seq_len]
+
+    def _position_ids(self, seq_len: int) -> torch.Tensor:
+        cached = self._position_ids_cache
+        if cached is not None and cached.shape[0] >= seq_len:
+            return cached[:seq_len]
+
+        cached_len = 0 if cached is None else cached.shape[0]
+        target_len = max(seq_len, cached_len * 2, 16)
+        if seq_len <= self.max_seq_len:
+            target_len = min(self.max_seq_len, 1 << (target_len - 1).bit_length())
+        self._position_ids_cache = torch.arange(target_len, device=self.device, dtype=torch.long)
+        return self._position_ids_cache[:seq_len]
+
+    def _apply_rope(self, tensor: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+        cos = cos[:, None, :]
+        sin = sin[:, None, :]
+        if self.rope_style == "half":
+            first, second = tensor.chunk(2, dim=-1)
+            return torch.cat([first * cos - second * sin, second * cos + first * sin], dim=-1)
+        even = tensor[..., 0::2]
+        odd = tensor[..., 1::2]
+        rotated = torch.empty_like(tensor)
+        rotated[..., 0::2] = even * cos - odd * sin
+        rotated[..., 1::2] = even * sin + odd * cos
+        return rotated
+
+    def _apply_rope_batch(self, tensor: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+        cos = cos[None, None, :]
+        sin = sin[None, None, :]
+        if self.rope_style == "half":
+            first, second = tensor.chunk(2, dim=-1)
+            return torch.cat([first * cos - second * sin, second * cos + first * sin], dim=-1)
+        even = tensor[..., 0::2]
+        odd = tensor[..., 1::2]
+        rotated = torch.empty_like(tensor)
+        rotated[..., 0::2] = even * cos - odd * sin
+        rotated[..., 1::2] = even * sin + odd * cos
+        return rotated
+
+    def _apply_rope_varlen_batch(self, tensor: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+        cos = cos[:, None, :]
+        sin = sin[:, None, :]
+        if self.rope_style == "half":
+            first, second = tensor.chunk(2, dim=-1)
+            return torch.cat([first * cos - second * sin, second * cos + first * sin], dim=-1)
+        even = tensor[..., 0::2]
+        odd = tensor[..., 1::2]
+        rotated = torch.empty_like(tensor)
+        rotated[..., 0::2] = even * cos - odd * sin
+        rotated[..., 1::2] = even * sin + odd * cos
+        return rotated
+
+    def _apply_rope_prefill_batch(self, tensor: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+        cos = cos[None, :, None, :]
+        sin = sin[None, :, None, :]
+        if self.rope_style == "half":
+            first, second = tensor.chunk(2, dim=-1)
+            return torch.cat([first * cos - second * sin, second * cos + first * sin], dim=-1)
+        even = tensor[..., 0::2]
+        odd = tensor[..., 1::2]
+        rotated = torch.empty_like(tensor)
+        rotated[..., 0::2] = even * cos - odd * sin
+        rotated[..., 1::2] = even * sin + odd * cos
+        return rotated
+
+    def _attention(
+        self,
+        hidden: torch.Tensor,
+        layer: dict[str, torch.Tensor],
+        position_offset: int,
+        past_kv: tuple[torch.Tensor, torch.Tensor] | None,
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+        seq_len = hidden.shape[0]
+        q, k, v = F.linear(hidden, layer["qkv"]).split((self.q_size, self.kv_size, self.kv_size), dim=-1)
+        q = q.view(seq_len, self.num_heads, self.head_dim)
+        k = k.view(seq_len, self.num_kv_heads, self.head_dim)
+        v = v.view(seq_len, self.num_kv_heads, self.head_dim)
+
+        cos, sin = self._rope_cos_sin(position_offset + seq_len, q.dtype)
+        cos = cos[position_offset : position_offset + seq_len]
+        sin = sin[position_offset : position_offset + seq_len]
+        q = self._apply_rope(q, cos, sin)
+        k = self._apply_rope(k, cos, sin)
+
+        if past_kv is not None:
+            past_k, past_v = past_kv
+            past_k = past_k[:position_offset]
+            past_v = past_v[:position_offset]
+            k = torch.cat([past_k, k], dim=0)
+            v = torch.cat([past_v, v], dim=0)
+        next_kv = (k, v)
+
+        k_attn = k
+        v_attn = v
+        if self.kv_repeat != 1:
+            k_attn = k.repeat_interleave(self.kv_repeat, dim=1)
+            v_attn = v.repeat_interleave(self.kv_repeat, dim=1)
+
+        if self._has_sdpa and past_kv is None:
+            context = F.scaled_dot_product_attention(
+                q.transpose(0, 1).unsqueeze(0),
+                k_attn.transpose(0, 1).unsqueeze(0),
+                v_attn.transpose(0, 1).unsqueeze(0),
+                is_causal=True,
+            )
+            context = context.squeeze(0).transpose(0, 1).reshape(seq_len, self.hidden_size)
+        elif self._has_sdpa and seq_len == 1:
+            context = F.scaled_dot_product_attention(
+                q.transpose(0, 1).unsqueeze(0),
+                k_attn.transpose(0, 1).unsqueeze(0),
+                v_attn.transpose(0, 1).unsqueeze(0),
+                is_causal=False,
+            )
+            context = context.squeeze(0).transpose(0, 1).reshape(seq_len, self.hidden_size)
+        else:
+            scores = torch.einsum("thd,shd->hts", q.float(), k_attn.float()) * (1.0 / math.sqrt(self.head_dim))
+            query_positions = self._position_ids(seq_len) + position_offset
+            key_positions = self._position_ids(k.shape[0])
+            mask = key_positions.unsqueeze(0) > query_positions.unsqueeze(1)
+            scores = scores.masked_fill(mask.unsqueeze(0), torch.finfo(scores.dtype).min)
+            probs = torch.softmax(scores, dim=-1).to(dtype=hidden.dtype)
+            context = torch.einsum("hts,shd->thd", probs, v_attn).reshape(seq_len, self.hidden_size)
+        return F.linear(context, layer["o"]), next_kv
+
+    def _attention_decode_single(
+        self,
+        hidden: torch.Tensor,
+        layer: dict[str, torch.Tensor],
+        position_offset: int,
+        rope_cos: torch.Tensor,
+        rope_sin: torch.Tensor,
+        cache: tuple[torch.Tensor, torch.Tensor],
+    ) -> torch.Tensor:
+        q, k_new, v_new = F.linear(hidden, layer["qkv"]).split((self.q_size, self.kv_size, self.kv_size), dim=-1)
+        q = q.view(self.num_heads, self.head_dim)
+        k_new = k_new.view(self.num_kv_heads, self.head_dim)
+        v_new = v_new.view(self.num_kv_heads, self.head_dim)
+
+        q = self._apply_rope_batch(q.unsqueeze(0), rope_cos, rope_sin)[0]
+        k_new = self._apply_rope_batch(k_new.unsqueeze(0), rope_cos, rope_sin)[0]
+
+        k_buffer, v_buffer = cache
+        k_buffer[position_offset].copy_(k_new)
+        v_buffer[position_offset].copy_(v_new)
+        k = k_buffer[: position_offset + 1]
+        v = v_buffer[: position_offset + 1]
+
+        k_attn = k
+        v_attn = v
+        if self.kv_repeat != 1:
+            k_attn = k.repeat_interleave(self.kv_repeat, dim=1)
+            v_attn = v.repeat_interleave(self.kv_repeat, dim=1)
+
+        if self._has_sdpa:
+            context = F.scaled_dot_product_attention(
+                q.unsqueeze(0).unsqueeze(2),
+                k_attn.transpose(0, 1).unsqueeze(0),
+                v_attn.transpose(0, 1).unsqueeze(0),
+                is_causal=False,
+            )
+            context = context.squeeze(0).squeeze(1).reshape(self.hidden_size)
+        else:
+            scores = torch.einsum("hd,shd->hs", q.float(), k_attn.float()) * (1.0 / math.sqrt(self.head_dim))
+            probs = torch.softmax(scores, dim=-1).to(dtype=hidden.dtype)
+            context = torch.einsum("hs,shd->hd", probs, v_attn).reshape(self.hidden_size)
+        return F.linear(context, layer["o"])
+
+    def _attention_decode_batch(
+        self,
+        hidden: torch.Tensor,
+        layer: dict[str, torch.Tensor],
+        position_offset: int,
+        rope_cos: torch.Tensor,
+        rope_sin: torch.Tensor,
+        past_kv: list[tuple[torch.Tensor, torch.Tensor]],
+    ) -> torch.Tensor:
+        batch_size = hidden.shape[0]
+        q, k_new, v_new = F.linear(hidden, layer["qkv"]).split((self.q_size, self.kv_size, self.kv_size), dim=-1)
+        q = q.view(batch_size, self.num_heads, self.head_dim)
+        k_new = k_new.view(batch_size, self.num_kv_heads, self.head_dim)
+        v_new = v_new.view(batch_size, self.num_kv_heads, self.head_dim)
+
+        q = self._apply_rope_batch(q, rope_cos, rope_sin)
+        k_new = self._apply_rope_batch(k_new, rope_cos, rope_sin)
+
+        for row, (k_buffer, v_buffer) in enumerate(past_kv):
+            k_buffer[position_offset].copy_(k_new[row])
+            v_buffer[position_offset].copy_(v_new[row])
+
+        k = torch.stack([cache[0][: position_offset + 1] for cache in past_kv], dim=0)
+        v = torch.stack([cache[1][: position_offset + 1] for cache in past_kv], dim=0)
+
+        k_attn = k
+        v_attn = v
+        if self.kv_repeat != 1:
+            k_attn = k.repeat_interleave(self.kv_repeat, dim=2)
+            v_attn = v.repeat_interleave(self.kv_repeat, dim=2)
+
+        if self._has_sdpa:
+            context = F.scaled_dot_product_attention(
+                q.unsqueeze(2),
+                k_attn.permute(0, 2, 1, 3),
+                v_attn.permute(0, 2, 1, 3),
+                is_causal=False,
+            )
+            context = context.squeeze(2).reshape(batch_size, self.hidden_size)
+        else:
+            scores = torch.einsum("bhd,bshd->bhs", q.float(), k_attn.float()) * (1.0 / math.sqrt(self.head_dim))
+            probs = torch.softmax(scores, dim=-1).to(dtype=hidden.dtype)
+            context = torch.einsum("bhs,bshd->bhd", probs, v_attn).reshape(batch_size, self.hidden_size)
+        return F.linear(context, layer["o"])
+
+    def _attention_decode_shared_batch(
+        self,
+        hidden: torch.Tensor,
+        layer: dict[str, torch.Tensor],
+        position_offset: int,
+        rope_cos: torch.Tensor,
+        rope_sin: torch.Tensor,
+        cache: tuple[torch.Tensor, torch.Tensor],
+        rows: torch.Tensor,
+    ) -> torch.Tensor:
+        batch_size = hidden.shape[0]
+        q, k_new, v_new = F.linear(hidden, layer["qkv"]).split((self.q_size, self.kv_size, self.kv_size), dim=-1)
+        q = q.view(batch_size, self.num_heads, self.head_dim)
+        k_new = k_new.view(batch_size, self.num_kv_heads, self.head_dim)
+        v_new = v_new.view(batch_size, self.num_kv_heads, self.head_dim)
+
+        q = self._apply_rope_batch(q, rope_cos, rope_sin)
+        k_new = self._apply_rope_batch(k_new, rope_cos, rope_sin)
+
+        k_buffer, v_buffer = cache
+        if self._is_dense_batch_rows(rows, k_buffer.shape[0]):
+            k_buffer[:, position_offset].copy_(k_new)
+            v_buffer[:, position_offset].copy_(v_new)
+            k = k_buffer[:, : position_offset + 1]
+            v = v_buffer[:, : position_offset + 1]
+        else:
+            positions = torch.full_like(rows, position_offset)
+            k_buffer.index_put_((rows, positions), k_new, accumulate=False)
+            v_buffer.index_put_((rows, positions), v_new, accumulate=False)
+            k = k_buffer.index_select(0, rows)[:, : position_offset + 1]
+            v = v_buffer.index_select(0, rows)[:, : position_offset + 1]
+
+        k_attn = k
+        v_attn = v
+        if self.kv_repeat != 1:
+            k_attn = k.repeat_interleave(self.kv_repeat, dim=2)
+            v_attn = v.repeat_interleave(self.kv_repeat, dim=2)
+
+        if self._has_sdpa:
+            context = F.scaled_dot_product_attention(
+                q.unsqueeze(2),
+                k_attn.permute(0, 2, 1, 3),
+                v_attn.permute(0, 2, 1, 3),
+                is_causal=False,
+            )
+            context = context.squeeze(2).reshape(batch_size, self.hidden_size)
+        else:
+            scores = torch.einsum("bhd,bshd->bhs", q.float(), k_attn.float()) * (1.0 / math.sqrt(self.head_dim))
+            probs = torch.softmax(scores, dim=-1).to(dtype=hidden.dtype)
+            context = torch.einsum("bhs,bshd->bhd", probs, v_attn).reshape(batch_size, self.hidden_size)
+        return F.linear(context, layer["o"])
+
+    def _attention_decode_varlen_batch(
+        self,
+        hidden: torch.Tensor,
+        layer: dict[str, torch.Tensor],
+        states: list[RequestState],
+        lengths: list[int],
+        max_position: int,
+        positions: torch.Tensor,
+        rope_cos: torch.Tensor,
+        rope_sin: torch.Tensor,
+        valid_mask: torch.Tensor,
+        attn_mask: torch.Tensor | None,
+        layer_idx: int,
+    ) -> torch.Tensor:
+        batch_size = hidden.shape[0]
+        q, k_new, v_new = F.linear(hidden, layer["qkv"]).split((self.q_size, self.kv_size, self.kv_size), dim=-1)
+        q = q.view(batch_size, self.num_heads, self.head_dim)
+        k_new = k_new.view(batch_size, self.num_kv_heads, self.head_dim)
+        v_new = v_new.view(batch_size, self.num_kv_heads, self.head_dim)
+
+        q = self._apply_rope_varlen_batch(q, rope_cos, rope_sin)
+        k_new = self._apply_rope_varlen_batch(k_new, rope_cos, rope_sin)
+
+        total_len = max_position + 1
+        k = torch.zeros((batch_size, total_len, self.num_kv_heads, self.head_dim), device=self.device, dtype=hidden.dtype)
+        v = torch.zeros_like(k)
+        for row, (state, length) in enumerate(zip(states, lengths)):
+            k_buffer, v_buffer = state.kv_cache[layer_idx]
+            k_buffer[length].copy_(k_new[row])
+            v_buffer[length].copy_(v_new[row])
+            valid_len = length + 1
+            k[row, :valid_len].copy_(k_buffer[:valid_len])
+            v[row, :valid_len].copy_(v_buffer[:valid_len])
+
+        k_attn = k
+        v_attn = v
+        if self.kv_repeat != 1:
+            k_attn = k.repeat_interleave(self.kv_repeat, dim=2)
+            v_attn = v.repeat_interleave(self.kv_repeat, dim=2)
+
+        if self._has_sdpa:
+            if attn_mask is None:
+                raise RuntimeError("varlen SDPA requires a precomputed attention mask")
+            context = F.scaled_dot_product_attention(
+                q.unsqueeze(2),
+                k_attn.permute(0, 2, 1, 3),
+                v_attn.permute(0, 2, 1, 3),
+                attn_mask=attn_mask,
+                is_causal=False,
+            )
+            context = context.squeeze(2).reshape(batch_size, self.hidden_size)
+        else:
+            scores = torch.einsum("bhd,bshd->bhs", q.float(), k_attn.float()) * (1.0 / math.sqrt(self.head_dim))
+            scores = scores.masked_fill(~valid_mask[:, None, :], torch.finfo(scores.dtype).min)
+            probs = torch.softmax(scores, dim=-1).to(dtype=hidden.dtype)
+            context = torch.einsum("bhs,bshd->bhd", probs, v_attn).reshape(batch_size, self.hidden_size)
+        return F.linear(context, layer["o"])
+
+    def _attention_decode_varlen_shared_batch(
+        self,
+        hidden: torch.Tensor,
+        layer: dict[str, torch.Tensor],
+        lengths: list[int],
+        max_position: int,
+        rows: torch.Tensor,
+        positions: torch.Tensor,
+        rope_cos: torch.Tensor,
+        rope_sin: torch.Tensor,
+        valid_mask: torch.Tensor,
+        attn_mask: torch.Tensor | None,
+        cache: tuple[torch.Tensor, torch.Tensor],
+    ) -> torch.Tensor:
+        batch_size = hidden.shape[0]
+        q, k_new, v_new = F.linear(hidden, layer["qkv"]).split((self.q_size, self.kv_size, self.kv_size), dim=-1)
+        q = q.view(batch_size, self.num_heads, self.head_dim)
+        k_new = k_new.view(batch_size, self.num_kv_heads, self.head_dim)
+        v_new = v_new.view(batch_size, self.num_kv_heads, self.head_dim)
+
+        q = self._apply_rope_varlen_batch(q, rope_cos, rope_sin)
+        k_new = self._apply_rope_varlen_batch(k_new, rope_cos, rope_sin)
+
+        k_buffer, v_buffer = cache
+        k_buffer.index_put_((rows, positions), k_new, accumulate=False)
+        v_buffer.index_put_((rows, positions), v_new, accumulate=False)
+
+        total_len = max_position + 1
+        if self._is_dense_batch_rows(rows, k_buffer.shape[0]):
+            k = k_buffer[:, :total_len]
+            v = v_buffer[:, :total_len]
+        else:
+            k = k_buffer.index_select(0, rows)[:, :total_len]
+            v = v_buffer.index_select(0, rows)[:, :total_len]
+
+        k_attn = k
+        v_attn = v
+        if self.kv_repeat != 1:
+            k_attn = k.repeat_interleave(self.kv_repeat, dim=2)
+            v_attn = v.repeat_interleave(self.kv_repeat, dim=2)
+
+        if self._has_sdpa:
+            if attn_mask is None:
+                raise RuntimeError("varlen shared SDPA requires a precomputed attention mask")
+            context = F.scaled_dot_product_attention(
+                q.unsqueeze(2),
+                k_attn.permute(0, 2, 1, 3),
+                v_attn.permute(0, 2, 1, 3),
+                attn_mask=attn_mask,
+                is_causal=False,
+            )
+            context = context.squeeze(2).reshape(batch_size, self.hidden_size)
+        else:
+            scores = torch.einsum("bhd,bshd->bhs", q.float(), k_attn.float()) * (1.0 / math.sqrt(self.head_dim))
+            scores = scores.masked_fill(~valid_mask[:, None, :], torch.finfo(scores.dtype).min)
+            probs = torch.softmax(scores, dim=-1).to(dtype=hidden.dtype)
+            context = torch.einsum("bhs,bshd->bhd", probs, v_attn).reshape(batch_size, self.hidden_size)
+        return F.linear(context, layer["o"])
+
+    def _attention_prefill_batch(
+        self,
+        hidden: torch.Tensor,
+        layer: dict[str, torch.Tensor],
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+        batch_size, seq_len, _ = hidden.shape
+        q, k, v = F.linear(hidden, layer["qkv"]).split((self.q_size, self.kv_size, self.kv_size), dim=-1)
+        q = q.view(batch_size, seq_len, self.num_heads, self.head_dim)
+        k = k.view(batch_size, seq_len, self.num_kv_heads, self.head_dim)
+        v = v.view(batch_size, seq_len, self.num_kv_heads, self.head_dim)
+
+        cos, sin = self._rope_cos_sin(seq_len, q.dtype)
+        q = self._apply_rope_prefill_batch(q, cos, sin)
+        k = self._apply_rope_prefill_batch(k, cos, sin)
+
+        k_attn = k
+        v_attn = v
+        if self.kv_repeat != 1:
+            k_attn = k.repeat_interleave(self.kv_repeat, dim=2)
+            v_attn = v.repeat_interleave(self.kv_repeat, dim=2)
+
+        if self._has_sdpa:
+            context = F.scaled_dot_product_attention(
+                q.permute(0, 2, 1, 3),
+                k_attn.permute(0, 2, 1, 3),
+                v_attn.permute(0, 2, 1, 3),
+                is_causal=True,
+            )
+            context = context.permute(0, 2, 1, 3).reshape(batch_size, seq_len, self.hidden_size)
+        else:
+            scores = torch.einsum("bthd,bshd->bhts", q.float(), k_attn.float()) * (1.0 / math.sqrt(self.head_dim))
+            mask = torch.ones((seq_len, seq_len), device=self.device, dtype=torch.bool).triu(1)
+            scores = scores.masked_fill(mask[None, None, :, :], torch.finfo(scores.dtype).min)
+            probs = torch.softmax(scores, dim=-1).to(dtype=hidden.dtype)
+            context = torch.einsum("bhts,bshd->bthd", probs, v_attn).reshape(batch_size, seq_len, self.hidden_size)
+        return F.linear(context, layer["o"]), (k.contiguous(), v.contiguous())
+
+    def _attention_prefill_varlen_batch(
+        self,
+        hidden: torch.Tensor,
+        layer: dict[str, torch.Tensor],
+        valid_mask: torch.Tensor,
+        attn_mask: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+        batch_size, seq_len, _ = hidden.shape
+        q, k, v = F.linear(hidden, layer["qkv"]).split((self.q_size, self.kv_size, self.kv_size), dim=-1)
+        q = q.view(batch_size, seq_len, self.num_heads, self.head_dim)
+        k = k.view(batch_size, seq_len, self.num_kv_heads, self.head_dim)
+        v = v.view(batch_size, seq_len, self.num_kv_heads, self.head_dim)
+
+        cos, sin = self._rope_cos_sin(seq_len, q.dtype)
+        q = self._apply_rope_prefill_batch(q, cos, sin)
+        k = self._apply_rope_prefill_batch(k, cos, sin)
+
+        k_attn = k
+        v_attn = v
+        if self.kv_repeat != 1:
+            k_attn = k.repeat_interleave(self.kv_repeat, dim=2)
+            v_attn = v.repeat_interleave(self.kv_repeat, dim=2)
+
+        if self._has_sdpa:
+            if attn_mask is None:
+                raise RuntimeError("varlen prefill SDPA requires a precomputed attention mask")
+            context = F.scaled_dot_product_attention(
+                q.permute(0, 2, 1, 3),
+                k_attn.permute(0, 2, 1, 3),
+                v_attn.permute(0, 2, 1, 3),
+                attn_mask=attn_mask,
+                is_causal=False,
+            )
+            context = context.permute(0, 2, 1, 3).reshape(batch_size, seq_len, self.hidden_size)
+        else:
+            scores = torch.einsum("bthd,bshd->bhts", q.float(), k_attn.float()) * (1.0 / math.sqrt(self.head_dim))
+            scores = scores.masked_fill(~valid_mask[:, None, :, :], torch.finfo(scores.dtype).min)
+            probs = torch.softmax(scores, dim=-1).to(dtype=hidden.dtype)
+            context = torch.einsum("bhts,bshd->bthd", probs, v_attn).reshape(batch_size, seq_len, self.hidden_size)
+        return F.linear(context, layer["o"]), (k.contiguous(), v.contiguous())
+
+    def _mlp(self, hidden: torch.Tensor, layer: dict[str, torch.Tensor]) -> torch.Tensor:
+        gate, up = F.linear(hidden, layer["w13"]).chunk(2, dim=-1)
+        gate = F.silu(gate)
+        gate.mul_(up)
+        return F.linear(gate, layer["w2"])
+
+    @torch.inference_mode()
+    def _forward_with_cache(
+        self,
+        token_ids: torch.Tensor,
+        past_kv: list[tuple[torch.Tensor, torch.Tensor]] | None = None,
+        position_offset: int = 0,
+    ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
+        if token_ids.numel() == 0:
+            raise ValueError("Requests must contain at least one token")
+        if past_kv is not None and len(past_kv) != self.num_layers:
+            raise ValueError("past_kv length must match num_hidden_layers")
+        hidden = self.embed_tokens.index_select(0, token_ids)
+        next_cache = []
+        for layer_idx, layer in enumerate(self.layers):
+            layer_past = None if past_kv is None else past_kv[layer_idx]
+            attn_out, layer_cache = self._attention(
+                self._rms_norm(hidden, layer["attn_norm"]),
+                layer,
+                position_offset,
+                layer_past,
+            )
+            hidden.add_(attn_out)
+            hidden.add_(self._mlp(self._rms_norm(hidden, layer["ffn_norm"]), layer))
+            next_cache.append(layer_cache)
+        hidden = self._rms_norm(hidden, self.final_norm)
+        return F.linear(hidden[-1], self.lm_head), next_cache
+
+    @torch.inference_mode()
+    def _forward_decode_batch(
+        self,
+        token_ids: torch.Tensor,
+        states: list[RequestState],
+        position_offset: int,
+    ) -> torch.Tensor:
+        if token_ids.numel() != len(states):
+            raise ValueError("decode batch tokens must match state count")
+        hidden = self.embed_tokens.index_select(0, token_ids)
+        cos, sin = self._rope_cos_sin(position_offset + 1, hidden.dtype)
+        rope_cos = cos[position_offset]
+        rope_sin = sin[position_offset]
+        if len(states) == 1:
+            state = states[0]
+            for layer_idx, layer in enumerate(self.layers):
+                attn_out = self._attention_decode_single(
+                    self._rms_norm(hidden[0], layer["attn_norm"]),
+                    layer,
+                    position_offset,
+                    rope_cos,
+                    rope_sin,
+                    state.kv_cache[layer_idx],
+                )
+                hidden.add_(attn_out.unsqueeze(0))
+                hidden.add_(self._mlp(self._rms_norm(hidden, layer["ffn_norm"]), layer))
+        else:
+            for layer_idx, layer in enumerate(self.layers):
+                layer_past = [state.kv_cache[layer_idx] for state in states]
+                attn_out = self._attention_decode_batch(
+                    self._rms_norm(hidden, layer["attn_norm"]),
+                    layer,
+                    position_offset,
+                    rope_cos,
+                    rope_sin,
+                    layer_past,
+                )
+                hidden.add_(attn_out)
+                hidden.add_(self._mlp(self._rms_norm(hidden, layer["ffn_norm"]), layer))
+        hidden = self._rms_norm(hidden, self.final_norm)
+        return F.linear(hidden, self.lm_head)
+
+    @torch.inference_mode()
+    def _forward_decode_shared_batch(
+        self,
+        token_ids: torch.Tensor,
+        states: list[RequestState],
+        position_offset: int,
+        rows: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if token_ids.numel() != len(states):
+            raise ValueError("decode batch tokens must match state count")
+        batch_cache = states[0].batch_cache
+        if batch_cache is None:
+            raise RuntimeError("shared decode requires shared request states")
+        if rows is None:
+            rows = self._shared_batch_rows(states)
+            if rows is None:
+                raise RuntimeError("shared decode requested for non-shared states")
+        hidden = self.embed_tokens.index_select(0, token_ids)
+        cos, sin = self._rope_cos_sin(position_offset + 1, hidden.dtype)
+        rope_cos = cos[position_offset]
+        rope_sin = sin[position_offset]
+        for layer_idx, layer in enumerate(self.layers):
+            attn_out = self._attention_decode_shared_batch(
+                self._rms_norm(hidden, layer["attn_norm"]),
+                layer,
+                position_offset,
+                rope_cos,
+                rope_sin,
+                batch_cache[layer_idx],
+                rows,
+            )
+            hidden.add_(attn_out)
+            hidden.add_(self._mlp(self._rms_norm(hidden, layer["ffn_norm"]), layer))
+        hidden = self._rms_norm(hidden, self.final_norm)
+        return F.linear(hidden, self.lm_head)
+
+    @torch.inference_mode()
+    def _forward_decode_varlen_batch(
+        self,
+        token_ids: torch.Tensor,
+        states: list[RequestState],
+        lengths: list[int],
+        max_position: int,
+    ) -> torch.Tensor:
+        if token_ids.numel() != len(states):
+            raise ValueError("decode batch tokens must match state count")
+        hidden = self.embed_tokens.index_select(0, token_ids)
+        positions = torch.tensor(lengths, device=self.device, dtype=torch.long)
+        cos, sin = self._rope_cos_sin(max_position + 1, hidden.dtype)
+        rope_cos = cos.index_select(0, positions)
+        rope_sin = sin.index_select(0, positions)
+        key_positions = self._position_ids(max_position + 1)
+        valid_mask = key_positions.unsqueeze(0) <= positions.unsqueeze(1)
+        attn_mask = None
+        if self._has_sdpa:
+            attn_mask = torch.zeros((len(states), 1, 1, max_position + 1), device=self.device, dtype=hidden.dtype)
+            attn_mask = attn_mask.masked_fill(~valid_mask[:, None, None, :], torch.finfo(hidden.dtype).min)
+        for layer_idx, layer in enumerate(self.layers):
+            attn_out = self._attention_decode_varlen_batch(
+                self._rms_norm(hidden, layer["attn_norm"]),
+                layer,
+                states,
+                lengths,
+                max_position,
+                positions,
+                rope_cos,
+                rope_sin,
+                valid_mask,
+                attn_mask,
+                layer_idx,
+            )
+            hidden.add_(attn_out)
+            hidden.add_(self._mlp(self._rms_norm(hidden, layer["ffn_norm"]), layer))
+        hidden = self._rms_norm(hidden, self.final_norm)
+        return F.linear(hidden, self.lm_head)
+
+    @torch.inference_mode()
+    def _forward_decode_varlen_shared_batch(
+        self,
+        token_ids: torch.Tensor,
+        states: list[RequestState],
+        lengths: list[int],
+        max_position: int,
+        rows: torch.Tensor | None = None,
+        positions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if token_ids.numel() != len(states):
+            raise ValueError("decode batch tokens must match state count")
+        batch_cache = states[0].batch_cache
+        if batch_cache is None:
+            raise RuntimeError("shared varlen decode requires shared request states")
+        if rows is None:
+            rows = self._shared_batch_rows(states)
+            if rows is None:
+                raise RuntimeError("shared varlen decode requested for non-shared states")
+        hidden = self.embed_tokens.index_select(0, token_ids)
+        if positions is None:
+            positions = torch.tensor(lengths, device=self.device, dtype=torch.long)
+        cos, sin = self._rope_cos_sin(max_position + 1, hidden.dtype)
+        rope_cos = cos.index_select(0, positions)
+        rope_sin = sin.index_select(0, positions)
+        key_positions = self._position_ids(max_position + 1)
+        valid_mask = key_positions.unsqueeze(0) <= positions.unsqueeze(1)
+        attn_mask = None
+        if self._has_sdpa:
+            attn_mask = torch.zeros((len(states), 1, 1, max_position + 1), device=self.device, dtype=hidden.dtype)
+            attn_mask = attn_mask.masked_fill(~valid_mask[:, None, None, :], torch.finfo(hidden.dtype).min)
+        for layer_idx, layer in enumerate(self.layers):
+            attn_out = self._attention_decode_varlen_shared_batch(
+                self._rms_norm(hidden, layer["attn_norm"]),
+                layer,
+                lengths,
+                max_position,
+                rows,
+                positions,
+                rope_cos,
+                rope_sin,
+                valid_mask,
+                attn_mask,
+                batch_cache[layer_idx],
+            )
+            hidden.add_(attn_out)
+            hidden.add_(self._mlp(self._rms_norm(hidden, layer["ffn_norm"]), layer))
+        hidden = self._rms_norm(hidden, self.final_norm)
+        return F.linear(hidden, self.lm_head)
+
+    @torch.inference_mode()
+    def _forward_prefill_batch(
+        self,
+        token_ids: torch.Tensor,
+    ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
+        if token_ids.dim() != 2:
+            raise ValueError("prefill batch token_ids must be 2D")
+        hidden = self.embed_tokens[token_ids]
+        next_cache_by_layer: list[tuple[torch.Tensor, torch.Tensor]] = []
+        for layer in self.layers:
+            attn_out, layer_cache = self._attention_prefill_batch(
+                self._rms_norm(hidden, layer["attn_norm"]),
+                layer,
+            )
+            hidden.add_(attn_out)
+            hidden.add_(self._mlp(self._rms_norm(hidden, layer["ffn_norm"]), layer))
+            next_cache_by_layer.append(layer_cache)
+        hidden = self._rms_norm(hidden, self.final_norm)
+        return F.linear(hidden[:, -1, :], self.lm_head), next_cache_by_layer
+
+    @torch.inference_mode()
+    def _forward_prefill_varlen_batch(
+        self,
+        token_ids: torch.Tensor,
+        lengths: list[int],
+    ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
+        if token_ids.dim() != 2:
+            raise ValueError("prefill varlen token_ids must be 2D")
+        hidden = self.embed_tokens[token_ids]
+        batch_size, seq_len = token_ids.shape
+        positions = self._position_ids(seq_len)
+        lengths_tensor = torch.tensor(lengths, device=self.device, dtype=torch.long)
+        key_valid = positions.unsqueeze(0) < lengths_tensor.unsqueeze(1)
+        causal = positions.unsqueeze(0) <= positions.unsqueeze(1)
+        valid_mask = key_valid[:, None, :] & causal[None, :, :]
+        attn_mask = None
+        if self._has_sdpa:
+            attn_mask = torch.zeros((batch_size, 1, seq_len, seq_len), device=self.device, dtype=hidden.dtype)
+            attn_mask = attn_mask.masked_fill(~valid_mask[:, None, :, :], torch.finfo(hidden.dtype).min)
+
+        next_cache_by_layer: list[tuple[torch.Tensor, torch.Tensor]] = []
+        for layer in self.layers:
+            attn_out, layer_cache = self._attention_prefill_varlen_batch(
+                self._rms_norm(hidden, layer["attn_norm"]),
+                layer,
+                valid_mask,
+                attn_mask,
+            )
+            hidden.add_(attn_out)
+            hidden.add_(self._mlp(self._rms_norm(hidden, layer["ffn_norm"]), layer))
+            next_cache_by_layer.append(layer_cache)
+        hidden = self._rms_norm(hidden, self.final_norm)
+        rows = self._position_ids(batch_size)
+        last_hidden = hidden[rows, lengths_tensor - 1]
+        return F.linear(last_hidden, self.lm_head), next_cache_by_layer
+
+    @torch.inference_mode()
+    def _forward_full(self, token_ids: torch.Tensor) -> torch.Tensor:
+        logits, _ = self._forward_with_cache(token_ids)
+        return logits
+
+
+def create_engine(model_config: dict, weight_dir: str, device: str = "cuda"):
+    return Engine(model_config, weight_dir, device)

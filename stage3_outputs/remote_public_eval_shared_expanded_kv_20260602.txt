@@ -1,0 +1,15 @@
+spawn ssh -o StrictHostKeyChecking=no -p 37315 root@10.176.37.31 python3 -c 'import base64,subprocess; cmd=base64.b64decode("Y2QgL3dvcmtzcGFjZSAmJiBiYXNoIHNjcmlwdHMvcnVuX3B1YmxpY190ZXN0cy5zaA==").decode(); raise SystemExit(subprocess.call(["bash","-lc",cmd]))'
+root@10.176.37.31's password: 
+correctness smoke passed
+Traceback (most recent call last):
+  File "/workspace/evaluator/stress_correctness.py", line 89, in <module>
+    raise SystemExit(main())
+  File "/workspace/evaluator/stress_correctness.py", line 75, in main
+    assert_close(logits[row], engine._forward_full(active[request_id].to(device)), f"decode step {step} id {request_id}")
+  File "/workspace/evaluator/stress_correctness.py", line 30, in assert_close
+    raise AssertionError(f"{label} failed: max_abs={max_abs}")
+AssertionError: decode step 11 id 1002 failed: max_abs=0.03875114023685455
+spawn ssh -o StrictHostKeyChecking=no -p 37315 root@10.176.37.31 python3 -c 'import base64,subprocess; cmd=base64.b64decode("Y2QgL3dvcmtzcGFjZSAmJiBiYXNoIHNjcmlwdHMvcnVuX3B1YmxpY190ZXN0cy5zaA==").decode(); raise SystemExit(subprocess.call(["bash","-lc",cmd]))'
+ssh: connect to host 10.176.37.31 port 37315: Operation timed out
+spawn ssh -o StrictHostKeyChecking=no -p 37315 root@10.176.37.31 python3 -c 'import base64,subprocess; cmd=base64.b64decode("Y2QgL3dvcmtzcGFjZSAmJiBiYXNoIHNjcmlwdHMvcnVuX3B1YmxpY190ZXN0cy5zaA==").decode(); raise SystemExit(subprocess.call(["bash","-lc",cmd]))'
+ssh: connect to host 10.176.37.31 port 37315: Operation timed out

@@ -1,0 +1,12 @@
+spawn ssh -o StrictHostKeyChecking=no -p 50571 root@10.176.37.31 python3 -c 'import base64,subprocess; cmd=base64.b64decode("Y2QgL3dvcmtzcGFjZSAmJiBiYXNoIHNjcmlwdHMvcnVuX3B1YmxpY190ZXN0cy5zaA==").decode(); raise SystemExit(subprocess.call(["bash","-lc",cmd]))'
+root@10.176.37.31's password: 
+Traceback (most recent call last):
+  File "/workspace/evaluator/test_correctness.py", line 94, in <module>
+    raise SystemExit(main())
+  File "/workspace/evaluator/test_correctness.py", line 55, in main
+    assert engine.requests[100].tokens.tolist()[-1] == 11
+AssertionError
+spawn ssh -o StrictHostKeyChecking=no -p 50571 root@10.176.37.31 python3 -c 'import base64,subprocess; cmd=base64.b64decode("Y2QgL3dvcmtzcGFjZSAmJiBiYXNoIHNjcmlwdHMvcnVuX3B1YmxpY190ZXN0cy5zaA==").decode(); raise SystemExit(subprocess.call(["bash","-lc",cmd]))'
+ssh: connect to host 10.176.37.31 port 50571: Operation timed out
+spawn ssh -o StrictHostKeyChecking=no -p 50571 root@10.176.37.31 python3 -c 'import base64,subprocess; cmd=base64.b64decode("Y2QgL3dvcmtzcGFjZSAmJiBiYXNoIHNjcmlwdHMvcnVuX3B1YmxpY190ZXN0cy5zaA==").decode(); raise SystemExit(subprocess.call(["bash","-lc",cmd]))'
+ssh: connect to host 10.176.37.31 port 50571: Operation timed out

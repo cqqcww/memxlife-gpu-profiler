@@ -1,0 +1,10 @@
+[pj3] prepare started at 2026-06-08T03:53:45Z
+[pj3] python: python3
+[pj3] pycache: /Users/amanda/Desktop/School/mlsys/memxlife-gpu-profiler/.pj3_work/pycache
+[pj3] engine renderer: /Users/amanda/Desktop/School/mlsys/memxlife-gpu-profiler/scripts/render_phase3_engine.py
+[pj3] engine variant: current_best
+[pj3] generated workspace/engine.py from phase3_engine_sources/current_best_engine.py
+[pj3] engine variant: current_best
+[pj3] source sha256: 119750e5dcb9b1a3571c7bb797b0b10e6e1e0565b20936871acb5af4677f6b90
+[pj3] engine.py py_compile passed
+[pj3] prepare finished at 2026-06-08T03:53:46Z

@@ -1,0 +1,26 @@
+spawn ssh -o StrictHostKeyChecking=no -p 50571 root@10.176.37.31 python3 -c 'import base64,subprocess; cmd=base64.b64decode("Y2QgL3dvcmtzcGFjZSAmJiBweXRob24zIGV2YWx1YXRvci9iZW5jaG1hcmtfYnJlYWtkb3duLnB5IC0tZW5naW5lIHdvcmtzcGFjZS9lbmdpbmUucHkgLS1tb2RlbC1jb25maWcgdGFyZ2V0L21vZGVsX2NvbmZpZy5qc29uIC0td2VpZ2h0LWRpciB0YXJnZXQvd2VpZ2h0cyAtLWRldmljZSBhdXRv").decode(); raise SystemExit(subprocess.call(["bash","-lc",cmd]))'
+root@10.176.37.31's password: 
+{
+  "same_prefill_seconds": 0.003000760916620493,
+  "same_decode_seconds": 0.11049759807065129,
+  "mixed_prefill_seconds": 0.002991426968947053,
+  "mixed_decode_seconds": 0.12550614983774722,
+  "same_prefill_tokens_per_second": 85311.69497112469,
+  "same_decode_tokens_per_second": 4633.5848827467835,
+  "mixed_prefill_tokens_per_second": 48137.56160347993,
+  "mixed_decode_tokens_per_second": 4079.481369334548,
+  "samples": {
+    "same_prefill_seconds": [
+      0.003000760916620493
+    ],
+    "same_decode_seconds": [
+      0.11049759807065129
+    ],
+    "mixed_prefill_seconds": [
+      0.002991426968947053
+    ],
+    "mixed_decode_seconds": [
+      0.12550614983774722
+    ]
+  }
+}
